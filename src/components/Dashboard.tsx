@@ -41,6 +41,7 @@ import {
   RECENT_NOTIFICATIONS 
 } from '../data/mockData';
 
+import { PlatformConnectionsSection } from './PlatformConnectionsSection';
 interface DashboardProps {
   user: UserProfile;
   onOpenComposer: () => void;
@@ -531,6 +532,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
 
       </div>
+
+      <PlatformConnectionsSection isAuthenticated={user.isLoggedIn} />
 
     </div>
   );
