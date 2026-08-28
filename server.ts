@@ -3,7 +3,9 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { registerAuthRoutes } from "./src/server/auth";
 
+dotenv.config({ path: ".env.local" });
 dotenv.config();
 
 let genAIClient: GoogleGenAI | null = null;
@@ -25,12 +27,19 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.disable("x-powered-by");
+  app.use(express.json({ limit: "16kb" }));
 
   // Health check
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", aiEnabled: Boolean(process.env.GEMINI_API_KEY) });
+    res.json({
+      status: "ok",
+      aiEnabled: Boolean(process.env.GEMINI_API_KEY),
+      authEnabled: Boolean(process.env.VITE_SUPABASE_URL && process.env.VITE_SUPABASE_PUBLISHABLE_KEY),
+    });
   });
+
+  registerAuthRoutes(app);
 
   // 1. AI Comprehensive Channel Analysis Endpoint
   app.post("/api/gemini/analyze", async (req, res) => {

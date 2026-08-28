@@ -14,6 +14,8 @@
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
+    "@supabase/server": "^1.4.1",
+    "@supabase/supabase-js": "^2.112.4",
     "@tailwindcss/vite": "^4.1.14",
     "@types/canvas-confetti": "^1.9.0",
     "@vitejs/plugin-react": "^5.0.4",
@@ -39,5 +41,11 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
   },
-  "description": "유튜브·인스타그램·쓰레드·X 통합 지표 분석 대시보드 (UI 프로토타입)"
+  "description": "유튜브·인스타그램·쓰레드·X 통합 지표 분석 대시보드 (UI 프로토타입)",
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "@google/genai@2.18.0": true,
+    "protobufjs@7.6.5": true
+  }
 }
