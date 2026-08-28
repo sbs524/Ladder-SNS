@@ -13,7 +13,7 @@ type Profile = {
   updated_at: string;
 };
 
-type AuthenticatedUser = { user: User; accessToken: string };
+export type AuthenticatedUser = { user: User; accessToken: string };
 
 const ACCESS_TOKEN_COOKIE = "ladder_access_token";
 const REFRESH_TOKEN_COOKIE = "ladder_refresh_token";
@@ -29,7 +29,7 @@ function getAuthConfig() {
   return { url, publishableKey };
 }
 
-function getAppUrl() {
+export function getAppUrl() {
   return (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
 }
 
@@ -165,7 +165,7 @@ function isOtpRequestRateLimited(req: Request, email: string) {
   return false;
 }
 
-async function getAuthenticatedUser(req: Request): Promise<AuthenticatedUser | null> {
+export async function getAuthenticatedUser(req: Request): Promise<AuthenticatedUser | null> {
   const accessToken = readCookie(req, ACCESS_TOKEN_COOKIE);
   if (!accessToken) return null;
   const { data, error } = await createSupabaseClient().auth.getUser(accessToken);

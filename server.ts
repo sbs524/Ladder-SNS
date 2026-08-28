@@ -4,6 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { registerAuthRoutes } from "./src/server/auth";
+import { registerYoutubeRoutes, startYoutubeSyncWorker } from "./src/server/youtube";
 
 dotenv.config({ path: ".env.local" });
 dotenv.config();
@@ -37,10 +38,13 @@ async function startServer() {
       status: "ok",
       aiEnabled: Boolean(process.env.GEMINI_API_KEY),
       authEnabled: Boolean(process.env.VITE_SUPABASE_URL && process.env.VITE_SUPABASE_PUBLISHABLE_KEY),
+      youtubeEnabled: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.GOOGLE_YOUTUBE_CLIENT_ID && process.env.GOOGLE_YOUTUBE_CLIENT_SECRET),
     });
   });
 
   registerAuthRoutes(app);
+  registerYoutubeRoutes(app);
+  startYoutubeSyncWorker();
 
   // 1. AI Comprehensive Channel Analysis Endpoint
   app.post("/api/gemini/analyze", async (req, res) => {

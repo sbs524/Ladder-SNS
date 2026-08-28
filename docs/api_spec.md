@@ -7,6 +7,8 @@
 | Health | `GET /api/health` | 불필요 |
 | Authentication | OTP 요청·검증, Google OAuth, 세션·프로필 관리 | API별 상이 |
 | Gemini | `POST /api/gemini/analyze`, `POST /api/gemini/advisor` | 현재 미적용 |
+| YouTube 연결·동기화 | OAuth 연결, 채널 조회·해제, 동기화 작업 생성 | 필요 |
+| Social comments | 댓글·이벤트 조회, SSE 스트림 | 필요 |
 
 인증은 Supabase Auth를 사용한다. 이메일 OTP와 Google OAuth는 모두 `auth.users`의 한 사용자에 연결되고, 앱 프로필은 `public.profiles`에 자동 생성된다.
 
@@ -202,3 +204,144 @@ Refresh token 쿠키로 세션을 갱신하고 새 HttpOnly 쿠키를 설정한�
 ### `POST /api/gemini/advisor`
 
 AI 컨설턴트 질의를 요청한다. 현재 레거시 프로토타입 API이며 회원가입 인증은 아직 적용되지 않았다.
+## YouTube 연결 및 동기화
+
+YouTube 로그인은 기존 Supabase Google 로그인과 별개다. 이 도메인의 OAuth는 채널·콘텐츠·분석·댓글을 읽기 위한 Google 권한을 요청하며, 토큰은 AES-256-GCM으로 암호화한 값만 `platform_oauth_grants`에 저장한다. 클라이언트에는 Supabase service role key나 Google client secret을 전달하지 않는다.
+
+### `GET /api/connections/youtube/start`
+
+Google의 YouTube 권한 승인 화면으로 `303` 리다이렉트한다.
+
+**인증**: 세션 쿠키 필요
+
+**쿼리**
+
+| 필드 | 필수 | 설명 |
+|---|---|---|
+| `include_revenue` | 아니오 | `true`이면 수익 분석 권한도 요청한다. 기본값은 `false`다. |
+
+요청 권한은 `youtube.readonly`, `yt-analytics.readonly`이며, 수익 권한은 선택사항이다. 10분 만료의 서명된 HttpOnly state/PKCE 쿠키로 OAuth 콜백을 검증한다.
+
+### `GET /api/connections/youtube/callback`
+
+Google OAuth 전용 내부 콜백이다. 호출자가 직접 사용하지 않는다. 승인 후 연결된 채널을 발견해 저장하고 `initial` 동기화 작업을 큐에 추가한 뒤 `APP_URL?youtube=connected`로 리다이렉트한다.
+
+**사전 설정**: Google Cloud OAuth Client의 Authorized redirect URI에 `<APP_URL>/api/connections/youtube/callback`을 정확히 등록해야 한다.
+
+### `GET /api/connections/youtube`
+
+현재 사용자가 연결한 YouTube 채널과 마지막으로 저장된 기본 지표를 반환한다.
+
+**인증**: 세션 쿠키 필요
+
+**200 응답**
+
+```json
+{
+  "channels": [
+    {
+      "social_channel_id": "uuid",
+      "external_channel_id": "UC...",
+      "display_name": "내 채널",
+      "last_synced_at": "2026-08-29T00:00:00.000Z",
+      "youtube_channel_profiles": {
+        "subscriber_count": 1200,
+        "view_count": 40000,
+        "video_count": 20
+      }
+    }
+  ]
+}
+```
+
+### `POST /api/connections/youtube/:channelId/sync`
+
+채널 메타데이터, 업로드 영상, 최근 30일 분석 지표, 일반 댓글의 동기화 작업을 큐에 추가한다. 작업이 완료될 때까지 요청을 붙잡지 않는다.
+
+**인증**: 세션 쿠키 필요
+
+**202 응답**
+
+```json
+{
+  "job": {
+    "platform_sync_job_id": "uuid",
+    "social_channel_id": "uuid",
+    "job_kind": "full",
+    "status": "queued"
+  }
+}
+```
+
+### `POST /api/connections/youtube/:channelId/comments/sync`
+
+일반 댓글 전용 동기화 작업을 추가한다. 댓글이 비활성화된 채널·영상의 오류는 다른 채널 데이터 동기화를 실패시키지 않는다.
+
+**인증**: 세션 쿠키 필요
+
+**202 응답**: `POST /api/connections/youtube/:channelId/sync`와 같은 `job` 객체
+
+### `DELETE /api/connections/youtube/:channelId`
+
+사용자가 소유한 채널을 연결 해제한다. 해당 채널의 콘텐츠·지표·댓글·작업은 FK cascade로 삭제된다. 같은 Google grant를 쓰는 다른 채널이 없을 때만 암호화 토큰 grant도 삭제한다.
+
+**인증**: 세션 쿠키 필요
+
+**204 응답**: 본문 없음
+
+## Social comments
+
+### `GET /api/social/comments`
+
+소유 채널의 저장된 댓글을 최신순으로 조회한다.
+
+**인증**: 세션 쿠키 필요
+
+**쿼리**
+
+| 필드 | 필수 | 설명 |
+|---|---|---|
+| `channel_id` | 예 | `social_channels.social_channel_id` |
+| `content_id` | 아니오 | 특정 영상/콘텐츠로 제한 |
+| `query` | 아니오 | 작성자·본문 전체 단어 검색, 최대 100자 |
+| `limit` | 아니오 | 1~100, 기본 30 |
+| `cursor` | 아니오 | 이전 응답의 `next_cursor` |
+
+**200 응답**
+
+```json
+{
+  "comments": [
+    {
+      "social_comment_id": "uuid",
+      "comment_kind": "comment",
+      "author_display_name": "작성자",
+      "body_text": "댓글 내용",
+      "source_published_at": "2026-08-29T00:00:00.000Z"
+    }
+  ],
+  "next_cursor": "eyJhdCI6Ii4uLiIsImlkIjoiLi4uIn0"
+}
+```
+
+조회는 `source_published_at, social_comment_id` 복합 정렬을 이용한 keyset pagination이라 데이터가 커져도 이전 페이지를 건너뛰지 않는다. `query`는 `search_document` GIN 인덱스를 사용한다.
+
+### `GET /api/social/comment-events`
+
+동기화 과정에서 새로 발견한 댓글 이벤트를 반환한다.
+
+**인증**: 세션 쿠키 필요
+
+| 필드 | 필수 | 설명 |
+|---|---|---|
+| `channel_id` | 예 | `social_channels.social_channel_id` |
+| `after` | 아니오 | ISO-8601 시각 이후 이벤트만 반환 |
+| `limit` | 아니오 | 1~100, 기본 30 |
+
+### `GET /api/social/comment-events/stream`
+
+새 댓글 이벤트를 Server-Sent Events(SSE)로 전달한다. `channel_id`를 주면 해당 채널만 구독하고, 생략하면 현재 사용자의 연결 채널 이벤트를 구독한다.
+
+**인증**: 세션 쿠키 필요
+
+현재는 동일 서버 인스턴스에서 열린 스트림으로 즉시 전달한다. 여러 인스턴스 간 실시간 fan-out은 추후 Supabase Realtime 또는 Redis를 연결할 때 이 이벤트 테이블을 공통 소스로 사용한다.
