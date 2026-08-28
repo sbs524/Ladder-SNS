@@ -1,0 +1,23 @@
+services:
+  - type: web
+    runtime: node
+    name: ladder-sns
+    branch: main
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    domains:
+      - laddersns.com
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_URL
+        value: https://laddersns.com
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
