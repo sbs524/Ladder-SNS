@@ -73,7 +73,7 @@
 
 **오류**: `400 INVALID_INPUT`, `429 OTP_RATE_LIMITED`, `4xx OTP_REQUEST_FAILED`, `503 AUTH_UNAVAILABLE`
 
-> Supabase Dashboard의 Email 템플릿을 6자리 OTP 템플릿으로 구성해야 한다. 기본 Magic Link 템플릿을 유지하면 코드 대신 링크가 발송된다.
+> 신규 사용자는 Confirm Signup 템플릿, 기존 사용자는 Magic Link or OTP 템플릿을 사용한다. 두 템플릿 모두 6자리 OTP 본문으로 구성해야 한다.
 
 ### `POST /api/auth/otp/verify`
 

@@ -230,7 +230,11 @@ export function registerAuthRoutes(app: Express) {
     }
 
     try {
-      const { data, error } = await createSupabaseClient().auth.verifyOtp({ email, token, type: "email" });
+      let otpResult = await createSupabaseClient().auth.verifyOtp({ email, token, type: "email" });
+      if (otpResult.error || !otpResult.data.session || !otpResult.data.user) {
+        otpResult = await createSupabaseClient().auth.verifyOtp({ email, token, type: "signup" });
+      }
+      const { data, error } = otpResult;
       if (error || !data.session || !data.user) {
         return sendError(res, error ? errorStatus(error) : 401, "OTP_VERIFICATION_FAILED", error ? errorMessage(error) : "Invalid verification code.");
       }
