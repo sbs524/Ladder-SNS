@@ -1,0 +1,6 @@
+{
+  "name": "Ladder SNS - SNS 통합 관리 플랫폼",
+  "description": "하얗고 투명한 글래스모피즘 디자인의 유튜브, 인스타그램, 쓰레드, X(트위터) 통합 소셜 미디어 지표 분석 및 채널 관리 대시보드",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

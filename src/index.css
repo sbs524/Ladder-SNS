@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --glass-bg: rgba(255, 255, 255, 0.45);
+    --glass-border: rgba(255, 255, 255, 0.6);
+  }
+
+  body {
+    background-color: #f1f5f9;
+    color: #0f172a;
+    font-family: -apple-system, BlinkMacSystemFont, "Pretendard Variable", Pretendard, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+    margin: 0;
+  }
+}
+
+/* Crystal Pure Glassmorphism Utilities */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow: 0 10px 32px -4px rgba(31, 38, 135, 0.05), 0 0 0 1px rgba(255, 255, 255, 0.5) inset;
+}
+
+.glass-panel-elevated {
+  background: rgba(255, 255, 255, 0.68);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 20px 48px -12px rgba(15, 23, 42, 0.08), 0 1px 0 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.03), 0 1px 0 0 rgba(255, 255, 255, 0.7) inset;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card:hover {
+  background: rgba(255, 255, 255, 0.65);
+  border-color: rgba(255, 255, 255, 0.95);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px -2px rgba(0, 0, 0, 0.06), 0 1px 0 0 rgba(255, 255, 255, 1) inset;
+}
+
+.glass-card-compact {
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.02);
+  transition: all 0.18s ease;
+}
+
+.glass-card-compact:hover {
+  background: rgba(255, 255, 255, 0.6);
+  border-color: rgba(255, 255, 255, 0.9);
+}
+
+.glass-input {
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  transition: all 0.2s ease;
+}
+
+.glass-input:focus {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  outline: none;
+}
+
+.glass-button-primary {
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(10px);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 4px 14px 0 rgba(15, 23, 42, 0.18);
+  transition: all 0.2s ease;
+}
+
+.glass-button-primary:hover {
+  background: rgba(15, 23, 42, 1);
+  transform: translateY(-1px);
+}
+
+.glass-button-secondary {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  color: #334155;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s ease;
+}
+
+.glass-button-secondary:hover {
+  background: rgba(255, 255, 255, 0.8);
+  color: #0f172a;
+}
+
+/* Radiant Mesh Background with Soft Pastel Orbs */
+.bg-mesh-glow {
+  background: radial-gradient(circle at 10% 10%, rgba(219, 234, 254, 0.65) 0%, transparent 45%),
+              radial-gradient(circle at 90% 15%, rgba(254, 226, 226, 0.55) 0%, transparent 40%),
+              radial-gradient(circle at 50% 50%, rgba(238, 242, 255, 0.7) 0%, transparent 60%),
+              radial-gradient(circle at 85% 85%, rgba(243, 232, 255, 0.55) 0%, transparent 45%),
+              radial-gradient(circle at 15% 90%, rgba(224, 242, 254, 0.6) 0%, transparent 45%),
+              #f8fafc;
+}
