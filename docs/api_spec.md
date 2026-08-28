@@ -67,7 +67,7 @@
 ```json
 {
   "message": "If the email address can receive messages, a sign-in code has been sent.",
-  "expires_in_seconds": 3600
+  "expires_in_seconds": 300
 }
 ```
 

@@ -19,6 +19,7 @@ const ACCESS_TOKEN_COOKIE = "ladder_access_token";
 const REFRESH_TOKEN_COOKIE = "ladder_refresh_token";
 const OAUTH_PKCE_COOKIE = "ladder_oauth_pkce";
 const OTP_COOLDOWN_MS = 60_000;
+const OTP_EXPIRY_SECONDS = 300;
 const otpRequests = new Map<string, number>();
 
 function getAuthConfig() {
@@ -215,7 +216,7 @@ export function registerAuthRoutes(app: Express) {
       if (error) return sendError(res, errorStatus(error), "OTP_REQUEST_FAILED", errorMessage(error));
       return res.status(202).json({
         message: "If the email address can receive messages, a sign-in code has been sent.",
-        expires_in_seconds: 3600,
+        expires_in_seconds: OTP_EXPIRY_SECONDS,
       });
     } catch (error) {
       return sendError(res, 503, "AUTH_UNAVAILABLE", errorMessage(error));
