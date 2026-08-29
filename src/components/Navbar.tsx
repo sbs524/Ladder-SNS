@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sparkles, LogIn, UserPlus, LogOut, RefreshCw, Plus, Bell } from 'lucide-react';
+import { Sparkles, LogIn, UserPlus, LogOut, RefreshCw, Plus, Bell, Database } from 'lucide-react';
 import ladderMark from '../assets/ladder-mark.png';
 import { UserProfile } from '../types';
 import { PLATFORM_CONFIGS } from '../data/mockData';
@@ -10,6 +10,7 @@ interface NavbarProps {
   onOpenOnboarding: () => void;
   onOpenComposer: () => void;
   onOpenAnalysis?: () => void;
+  onOpenRawData?: () => void;
   onLogout: () => void;
   isHeroMode: boolean;
   onToggleView: () => void;
@@ -21,6 +22,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenOnboarding,
   onOpenComposer,
   onOpenAnalysis,
+  onOpenRawData,
   onLogout,
   isHeroMode,
   onToggleView,
@@ -77,6 +79,19 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
               <span className="hidden sm:inline">AI 지표 분석</span>
               <span className="sm:hidden">분석</span>
+            </button>
+          )}
+
+          {/* Raw YouTube data explorer */}
+          {!isHeroMode && onOpenRawData && (
+            <button
+              id="nav-raw-data-btn"
+              onClick={onOpenRawData}
+              className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-xl bg-white/40 hover:bg-white/70 text-slate-700 border border-white/60 transition-all"
+              title="YouTube 원본 데이터 보기"
+            >
+              <Database className="w-3.5 h-3.5 text-slate-500" />
+              <span className="hidden sm:inline">원본 데이터</span>
             </button>
           )}
 

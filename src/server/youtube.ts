@@ -572,9 +572,11 @@ async function syncVideoPage(db: ReturnType<typeof getAdminClient>, channel: Soc
 
 type AnalyticsResponse = { columnHeaders?: Array<{ name?: string }>; rows?: Array<Array<number | string>> };
 
-async function analyticsRows(accessToken: string, startDate: string, endDate: string, dimensions: string, metrics: string) {
+async function analyticsRows(accessToken: string, startDate: string, endDate: string, dimensions: string, metrics: string, filters?: string) {
   const url = new URL("https://youtubeanalytics.googleapis.com/v2/reports");
-  url.search = new URLSearchParams({ ids: "channel==MINE", startDate, endDate, dimensions, metrics, maxResults: "200" }).toString();
+  const params: Record<string, string> = { ids: "channel==MINE", startDate, endDate, dimensions, metrics, maxResults: "200" };
+  if (filters) params.filters = filters;
+  url.search = new URLSearchParams(params).toString();
   const response = await googleJson<AnalyticsResponse>(url, accessToken);
   const headers = (response.columnHeaders || []).map((header) => header.name || "");
   return (response.rows || []).map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index]])) as JsonRecord);
@@ -637,16 +639,22 @@ async function syncAnalytics(db: ReturnType<typeof getAdminClient>, channel: Soc
     if (error) throw error;
   }
 
-  const breakdownReports = [
+  const breakdownReports: Array<{ reportType: string; dimensions: string; metrics: string; filters?: string }> = [
     { reportType: "country", dimensions: "day,country", metrics: "views,estimatedMinutesWatched,likes,comments,shares" },
-    { reportType: "traffic_source", dimensions: "day,trafficSourceType", metrics: "views,estimatedMinutesWatched,averageViewDuration" },
+    // "insightTrafficSourceType" is the correct API dimension name (not "trafficSourceType").
+    { reportType: "traffic_source", dimensions: "day,insightTrafficSourceType", metrics: "views,estimatedMinutesWatched,averageViewDuration" },
     { reportType: "device", dimensions: "day,deviceType", metrics: "views,estimatedMinutesWatched,averageViewDuration" },
     { reportType: "audience", dimensions: "day,ageGroup,gender", metrics: "views,estimatedMinutesWatched,averageViewDuration" },
+    { reportType: "playback_location", dimensions: "day,insightPlaybackLocationType", metrics: "views,estimatedMinutesWatched,averageViewDuration" },
+    { reportType: "subscribed_status", dimensions: "day,subscribedStatus", metrics: "views,estimatedMinutesWatched,averageViewDuration" },
+    // insightTrafficSourceDetail requires filtering to a single insightTrafficSourceType value.
+    { reportType: "search_terms", dimensions: "day,insightTrafficSourceDetail", metrics: "views", filters: "insightTrafficSourceType==YT_SEARCH" },
+    { reportType: "external_traffic", dimensions: "day,insightTrafficSourceDetail", metrics: "views", filters: "insightTrafficSourceType==EXT_URL" },
   ];
   let breakdownCount = 0;
   for (const report of breakdownReports) {
     try {
-      const rows = await analyticsRows(accessToken, startDate, endDate, report.dimensions, report.metrics);
+      const rows = await analyticsRows(accessToken, startDate, endDate, report.dimensions, report.metrics, report.filters);
       const rowsToStore = rows.flatMap((row) => {
         const metricDate = typeof row.day === "string" ? row.day : null;
         if (!metricDate) return [];
@@ -679,7 +687,98 @@ async function syncAnalytics(db: ReturnType<typeof getAdminClient>, channel: Soc
       console.warn(`Skipping unavailable YouTube ${report.reportType} breakdown for ${channel.social_channel_id}:`, error instanceof Error ? error.message : error);
     }
   }
-  return { dailyMetrics: daily.size, breakdowns: breakdownCount };
+
+  // "sharingService" is a lifetime/date-range snapshot dimension; it does not combine with "day".
+  try {
+    const shareRows = await analyticsRows(accessToken, startDate, endDate, "sharingService", "shares");
+    const shareRowsToStore = shareRows.flatMap((row) => {
+      if (typeof row.sharingService !== "string" || row.shares === undefined) return [];
+      const dimensionValues: JsonRecord = { sharingService: row.sharingService };
+      return [{
+        social_channel_id: channel.social_channel_id,
+        metric_date: endDate,
+        report_type: "sharing_service",
+        dimension_key: "sharingService",
+        dimension_hash: stableHash(dimensionValues),
+        dimension_values: dimensionValues,
+        metric_values: { shares: row.shares },
+        query_start_date: startDate,
+        query_end_date: endDate,
+      }];
+    });
+    if (shareRowsToStore.length > 0) {
+      const { error } = await db.from("youtube_analytics_breakdowns").upsert(shareRowsToStore, { onConflict: "social_channel_id,metric_date,report_type,dimension_key,dimension_hash" });
+      if (error) throw error;
+      breakdownCount += shareRowsToStore.length;
+    }
+  } catch (error) {
+    console.warn(`Skipping unavailable YouTube sharing_service breakdown for ${channel.social_channel_id}:`, error instanceof Error ? error.message : error);
+  }
+
+  const retentionPoints = await syncRetentionCurves(db, channel, accessToken);
+  return { dailyMetrics: daily.size, breakdowns: breakdownCount, retentionPoints };
+}
+
+// Audience retention is per-video only (the API requires filters=video==ID) and is capped to the
+// most recently published videos so a channel with a large back catalog doesn't multiply API calls.
+const RETENTION_VIDEO_LIMIT = 15;
+
+async function syncRetentionCurves(db: ReturnType<typeof getAdminClient>, channel: SocialChannel, accessToken: string) {
+  const { data: contents, error } = await db
+    .from("social_contents")
+    .select("external_content_id, youtube_videos(youtube_video_id)")
+    .eq("social_channel_id", channel.social_channel_id)
+    .eq("platform", "youtube")
+    .order("source_published_at", { ascending: false, nullsFirst: false })
+    .limit(RETENTION_VIDEO_LIMIT);
+  if (error) throw error;
+
+  const targets = (contents || []).flatMap((row) => {
+    const relation = row.youtube_videos as { youtube_video_id: string } | { youtube_video_id: string }[] | null;
+    const youtubeVideoId = Array.isArray(relation) ? relation[0]?.youtube_video_id : relation?.youtube_video_id;
+    return youtubeVideoId ? [{ externalId: row.external_content_id as string, youtubeVideoId }] : [];
+  });
+  if (targets.length === 0) return 0;
+
+  const endDate = new Date().toISOString().slice(0, 10);
+  const startDate = "2005-01-01";
+  let stored = 0;
+  for (const target of targets) {
+    try {
+      const rows = await analyticsRows(accessToken, startDate, endDate, "elapsedVideoTimeRatio", "audienceWatchRatio,relativeRetentionPerformance", `video==${target.externalId}`);
+      const rowsToStore = rows.flatMap((row) => {
+        if (row.elapsedVideoTimeRatio === undefined) return [];
+        // The video id is folded into dimension_values so the generic (channel, date, report_type,
+        // dimension_key, dimension_hash) uniqueness key doesn't collide across different videos that
+        // share the same elapsedVideoTimeRatio bucket value.
+        const dimensionValues: JsonRecord = { elapsedVideoTimeRatio: row.elapsedVideoTimeRatio, video_external_id: target.externalId };
+        const metricValues: JsonRecord = {};
+        if (row.audienceWatchRatio !== undefined) metricValues.audience_watch_ratio = row.audienceWatchRatio;
+        if (row.relativeRetentionPerformance !== undefined) metricValues.relative_retention_performance = row.relativeRetentionPerformance;
+        return [{
+          social_channel_id: channel.social_channel_id,
+          youtube_video_id: target.youtubeVideoId,
+          metric_date: endDate,
+          report_type: "retention_curve",
+          dimension_key: "elapsedVideoTimeRatio",
+          dimension_hash: stableHash(dimensionValues),
+          dimension_values: dimensionValues,
+          metric_values: metricValues,
+          query_start_date: startDate,
+          query_end_date: endDate,
+        }];
+      });
+      if (rowsToStore.length > 0) {
+        const { error: upsertError } = await db.from("youtube_analytics_breakdowns").upsert(rowsToStore, { onConflict: "social_channel_id,metric_date,report_type,dimension_key,dimension_hash" });
+        if (upsertError) throw upsertError;
+        stored += rowsToStore.length;
+      }
+    } catch (error) {
+      // Retention data can be withheld below a view-count threshold; skip that one video, not the whole sync.
+      console.warn(`Skipping retention curve for YouTube video ${target.externalId}:`, error instanceof Error ? error.message : error);
+    }
+  }
+  return stored;
 }
 
 function commentPayload(comment: GoogleComment, channel: SocialChannel, contentIds: Map<string, string>, parentId: string | null = null) {
@@ -954,6 +1053,49 @@ export function registerYoutubeRoutes(app: Express) {
       return res.status(200).json({ channels: data || [] });
     } catch (error) {
       return toErrorResponse(res, error);
+    }
+  });
+
+  // Everything currently synced for one channel, for exploring what YouTube's APIs expose while
+  // the real dashboard design is still being decided. Not meant to be a permanent dashboard route.
+  app.get("/api/connections/youtube/:channelId/raw-data", async (req, res) => {
+    try {
+      const authenticatedUser = await getAuthenticatedUser(req);
+      if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
+      const channelId = readId(req.params.channelId);
+      if (!channelId) return sendError(res, 400, "INVALID_CHANNEL_ID", "A valid channel ID is required.");
+      const db = getAdminClient();
+      const channel = await requireOwnedChannel(db, authenticatedUser.user.id, channelId);
+
+      const { data: profile, error: profileError } = await db.from("youtube_channel_profiles").select("*").eq("social_channel_id", channelId).maybeSingle();
+      if (profileError) throw profileError;
+
+      const { data: videos, error: videosError } = await db.from("social_contents").select("*, youtube_videos(*)").eq("social_channel_id", channelId).eq("platform", "youtube").order("source_published_at", { ascending: false, nullsFirst: false }).limit(200);
+      if (videosError) throw videosError;
+
+      const { data: dailyMetrics, error: dailyError } = await db.from("youtube_channel_daily_metrics").select("*").eq("social_channel_id", channelId).order("metric_date", { ascending: false });
+      if (dailyError) throw dailyError;
+
+      const { data: breakdownRows, error: breakdownError } = await db.from("youtube_analytics_breakdowns").select("*").eq("social_channel_id", channelId).order("metric_date", { ascending: false }).limit(5000);
+      if (breakdownError) throw breakdownError;
+      const breakdowns: Record<string, unknown[]> = {};
+      for (const row of breakdownRows || []) {
+        const reportType = row.report_type as string;
+        (breakdowns[reportType] ||= []).push(row);
+      }
+
+      const { data: comments, error: commentsError } = await db.from("social_comments").select("*").eq("social_channel_id", channelId).eq("visibility_status", "active").order("source_published_at", { ascending: false, nullsFirst: false }).limit(100);
+      if (commentsError) throw commentsError;
+
+      return res.status(200).json({
+        channel: { ...channel, profile: profile || null },
+        videos: videos || [],
+        daily_metrics: dailyMetrics || [],
+        breakdowns,
+        comments: comments || [],
+      });
+    } catch (error) {
+      return toErrorResponse(res, error, "YOUTUBE_RAW_DATA_FAILED");
     }
   });
 
