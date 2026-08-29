@@ -720,7 +720,10 @@ async function syncCommentPage(db: ReturnType<typeof getAdminClient>, channel: S
   const params = new URLSearchParams({ allThreadsRelatedToChannelId: channel.external_channel_id, maxResults: "100", order: "time", part: "snippet,replies", textFormat: "plainText" });
   if (pageToken) params.set("pageToken", pageToken);
   url.search = params.toString();
-  const response = await googleJson<{ items?: Array<{ id?: string; snippet?: { topLevelComment?: GoogleComment; totalReplyCount?: number }; replies?: { comments?: GoogleComment[] }>; nextPageToken?: string }>(url, accessToken);
+  const response = await googleJson<{
+    items?: Array<{ id?: string; snippet?: { topLevelComment?: GoogleComment; totalReplyCount?: number }; replies?: { comments?: GoogleComment[] } }>;
+    nextPageToken?: string;
+  }>(url, accessToken);
   const threads = response.items || [];
   const allComments = threads.flatMap((thread) => [thread.snippet?.topLevelComment, ...(thread.replies?.comments || [])].filter((item): item is GoogleComment => Boolean(item?.id)));
   if (allComments.length === 0) return { comments: 0, nextPageToken: response.nextPageToken || null };
