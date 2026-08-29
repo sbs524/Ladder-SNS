@@ -7,7 +7,7 @@
 | Health | `GET /api/health` | 불필요 |
 | Authentication | OTP 요청·검증, Google OAuth, 세션·프로필 관리, 아바타 업로드, 회원탈퇴 | API별 상이 |
 | Gemini | `POST /api/gemini/analyze`, `POST /api/gemini/advisor` | 현재 미적용 |
-| YouTube 연결·동기화 | OAuth 연결, 채널 조회·해제, 동기화 작업 생성 | 필요 |
+| YouTube 연결·동기화 | OAuth 연결, 채널 조회·해제, 동기화 작업 생성, 원본 데이터 조회, 영상 수정·삭제, 댓글 답글·모더레이션 | 필요 |
 | Social comments | 댓글·이벤트 조회, SSE 스트림 | 필요 |
 
 인증은 Supabase Auth를 사용한다. 이메일 OTP와 Google OAuth는 모두 `auth.users`의 한 사용자에 연결되고, 앱 프로필은 `public.profiles`에 자동 생성된다.
@@ -233,7 +233,9 @@ Refresh token 쿠키로 세션을 갱신하고 새 HttpOnly 쿠키를 설정한�
 AI 컨설턴트 질의를 요청한다. 현재 레거시 프로토타입 API이며 회원가입 인증은 아직 적용되지 않았다.
 ## YouTube 연결 및 동기화
 
-YouTube 로그인은 기존 Supabase Google 로그인과 별개다. 이 도메인의 OAuth는 채널·콘텐츠·분석·댓글을 읽기 위한 Google 권한을 요청하며, 토큰은 AES-256-GCM으로 암호화한 값만 `platform_oauth_grants`에 저장한다. 클라이언트에는 Supabase service role key나 Google client secret을 전달하지 않는다.
+YouTube 로그인은 기존 Supabase Google 로그인과 별개다. 이 도메인의 OAuth는 채널·콘텐츠·분석·댓글을 읽고 쓰기 위한 Google 권한(`youtube.force-ssl`)을 요청하며, 토큰은 AES-256-GCM으로 암호화한 값만 `platform_oauth_grants`에 저장한다. 클라이언트에는 Supabase service role key나 Google client secret을 전달하지 않는다.
+
+`youtube.force-ssl` 권한이 도입되기 전에 연결된 채널은 `youtube.readonly`만 가지고 있어 아래 쓰기 라우트(영상 수정·삭제, 댓글 답글·모더레이션)를 호출하면 `403 YOUTUBE_SCOPE_INSUFFICIENT`가 반환된다 — 사용자가 `GET /api/connections/youtube/start`로 채널을 다시 연결(재동의)해야 해결된다.
 
 ### `GET /api/connections/youtube/start`
 
@@ -247,7 +249,7 @@ Google의 YouTube 권한 승인 화면으로 `303` 리다이렉트한다.
 |---|---|---|
 | `include_revenue` | 아니오 | `true`이면 수익 분석 권한도 요청한다. 기본값은 `false`다. |
 
-요청 권한은 `youtube.readonly`, `yt-analytics.readonly`이며, 수익 권한은 선택사항이다. 10분 만료의 서명된 HttpOnly state/PKCE 쿠키로 OAuth 콜백을 검증한다.
+요청 권한은 `youtube.force-ssl`, `yt-analytics.readonly`이며, 수익 권한은 선택사항이다. 10분 만료의 서명된 HttpOnly state/PKCE 쿠키로 OAuth 콜백을 검증한다.
 
 ### `GET /api/connections/youtube/callback`
 
@@ -275,11 +277,60 @@ Google OAuth 전용 내부 콜백이다. 호출자가 직접 사용하지 않는
         "subscriber_count": 1200,
         "view_count": 40000,
         "video_count": 20
-      }
+      },
+      "can_manage_content": true
     }
   ]
 }
 ```
+
+`can_manage_content`는 이 채널의 grant에 `youtube.force-ssl` 스코프가 포함되어 있는지를 나타낸다. `false`면 영상 수정·삭제, 댓글 답글·모더레이션 라우트가 모두 `403`을 반환하므로 프런트는 이 값으로 해당 UI를 감춘다.
+
+### `GET /api/connections/youtube/:channelId/raw-data`
+
+이 채널에 대해 지금까지 동기화된 채널 프로필, 영상, 일별 지표, 분석 breakdown, 댓글을 가공 없이 전부 반환한다. "원본 데이터" 페이지가 이 응답으로 개요/영상 관리/분석 탭을 채운다.
+
+**인증**: 세션 쿠키 필요, 채널 소유자만 조회 가능
+
+**200 응답**: `{ channel, videos, daily_metrics, breakdowns, comments }` — 각 필드는 해당 테이블의 전체 컬럼을 그대로 담은 배열/객체다.
+
+### `PATCH /api/connections/youtube/:channelId/videos/:contentId`
+
+영상의 제목·설명을 수정하고 Google `videos.update`로 실제 YouTube에 반영한다.
+
+**인증**: 세션 쿠키 필요, `can_manage_content`가 `true`인 채널만 가능(아니면 `403 YOUTUBE_SCOPE_INSUFFICIENT`)
+
+**본문**: `{ "title"?: string, "description"?: string }` — 최소 하나 필수. 제목 100자, 설명 5000자 제한.
+
+**200 응답**: `{ "video": { "social_content_id": "uuid", "title": "...", "body_text": "..." } }`
+
+### `DELETE /api/connections/youtube/:channelId/videos/:contentId`
+
+Google `videos.delete`로 영상을 영구 삭제하고, 로컬 `social_contents.visibility`를 `deleted`로 표시한다. 되돌릴 수 없다.
+
+**인증**: 세션 쿠키 필요, `can_manage_content` 필요
+
+**204 응답**: 본문 없음
+
+### `POST /api/connections/youtube/:channelId/comments/:commentId/reply`
+
+시청자 댓글에 채널 소유자로서 답글(대댓글)을 작성한다. 대상이 이미 답글이면 그 답글의 원본 top-level 댓글에 답글이 달린다(YouTube가 답글의 답글을 지원하지 않음).
+
+**인증**: 세션 쿠키 필요, `can_manage_content` 필요
+
+**본문**: `{ "body": string }` (1~10,000자)
+
+**201 응답**: `{ "comment": { ...새로 저장된 답글 행... } }`
+
+### `PATCH /api/connections/youtube/:channelId/comments/:commentId/moderate`
+
+댓글을 숨기거나 삭제한다.
+
+**인증**: 세션 쿠키 필요, `can_manage_content` 필요
+
+**본문**: `{ "action": "hide" | "delete" }` — `hide`는 Google `comments.setModerationStatus(rejected)`를 호출하고 로컬 `visibility_status`를 `hidden`으로, `delete`는 Google `comments.delete`(영구)를 호출하고 `deleted`로 표시한다.
+
+**204 응답**: 본문 없음
 
 ### `POST /api/connections/youtube/:channelId/sync`
 

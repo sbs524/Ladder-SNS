@@ -113,6 +113,9 @@ type CommentStream = { profileId: string; channelId?: string; response: Response
 
 const YOUTUBE_STATE_COOKIE = "ladder_youtube_oauth";
 const YOUTUBE_CALLBACK_PATH = "/api/connections/youtube/callback";
+// A superset of youtube.readonly (read + write) — requesting it lets the app manage videos and
+// comments without also requesting the now-redundant readonly scope.
+const YOUTUBE_WRITE_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl";
 const DEFAULT_COMMENT_LIMIT = 30;
 const MAX_COMMENT_LIMIT = 100;
 const SYNC_WINDOW_DAYS = 30;
@@ -282,7 +285,10 @@ async function googleJson<T>(url: URL | string, accessToken?: string, init?: Req
     const message = body.slice(0, 300) || `Google API returned ${response.status}.`;
     throw new ApiError(response.status === 401 ? 401 : 502, "GOOGLE_API_FAILED", message);
   }
-  return (await response.json()) as T;
+  // videos.delete, comments.delete, and comments.setModerationStatus all return 204 No Content.
+  if (response.status === 204) return undefined as T;
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 async function exchangeGoogleCode(code: string, verifier: string) {
@@ -363,6 +369,55 @@ async function requireOwnedGrant(db: ReturnType<typeof getAdminClient>, profileI
 async function getGrantForChannel(db: ReturnType<typeof getAdminClient>, channel: SocialChannel) {
   if (!channel.platform_oauth_grant_id) throw new ApiError(409, "YOUTUBE_CONNECTION_MISSING", "This channel has no active YouTube connection.");
   return requireOwnedGrant(db, channel.profile_id, channel.platform_oauth_grant_id);
+}
+
+function hasWriteScope(scopes: string[] | null | undefined) {
+  return Array.isArray(scopes) && scopes.includes(YOUTUBE_WRITE_SCOPE);
+}
+
+// Channels connected before the write scope was introduced only granted youtube.readonly — this
+// throws until the user reconnects the channel and re-consents to the write scope.
+function requireWriteScope(grant: OAuthGrant) {
+  if (!hasWriteScope(grant.granted_scopes)) {
+    throw new ApiError(403, "YOUTUBE_SCOPE_INSUFFICIENT", "Reconnect this YouTube channel to grant permission to manage videos and comments.");
+  }
+}
+
+async function requireOwnedVideo(db: ReturnType<typeof getAdminClient>, channelId: string, contentId: string) {
+  const { data, error } = await db
+    .from("social_contents")
+    .select("social_content_id, social_channel_id, external_content_id, title, body_text, youtube_videos(category_external_id, tags, default_language)")
+    .eq("social_content_id", contentId)
+    .eq("social_channel_id", channelId)
+    .eq("platform", "youtube")
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new ApiError(404, "YOUTUBE_VIDEO_NOT_FOUND", "The video was not found.");
+  return data;
+}
+
+async function requireOwnedComment(db: ReturnType<typeof getAdminClient>, channelId: string, commentId: string) {
+  const { data, error } = await db
+    .from("social_comments")
+    .select("social_comment_id, social_channel_id, social_content_id, external_comment_id, comment_kind, parent_social_comment_id")
+    .eq("social_comment_id", commentId)
+    .eq("social_channel_id", channelId)
+    .eq("platform", "youtube")
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new ApiError(404, "YOUTUBE_COMMENT_NOT_FOUND", "The comment was not found.");
+  return data;
+}
+
+// YouTube only supports one level of replies, so replying to a reply must target the reply's
+// top-level parent instead. Note: commentPayload()'s external_thread_id is not reusable for this —
+// it stores the parent's *internal* social_comment_id on reply rows, not an external YouTube id.
+async function resolveGoogleParentCommentId(db: ReturnType<typeof getAdminClient>, comment: { comment_kind: string; external_comment_id: string; parent_social_comment_id: string | null }) {
+  if (comment.comment_kind !== "reply" || !comment.parent_social_comment_id) return comment.external_comment_id;
+  const { data, error } = await db.from("social_comments").select("external_comment_id").eq("social_comment_id", comment.parent_social_comment_id).maybeSingle();
+  if (error) throw error;
+  if (!data) throw new ApiError(404, "YOUTUBE_COMMENT_NOT_FOUND", "The parent comment was not found.");
+  return data.external_comment_id as string;
 }
 
 // Called from account deletion (src/server/auth.ts). Best-effort revokes each grant's token with
@@ -975,7 +1030,7 @@ export function registerYoutubeRoutes(app: Express) {
       });
       const scopes = [
         "openid",
-        "https://www.googleapis.com/auth/youtube.readonly",
+        YOUTUBE_WRITE_SCOPE,
         "https://www.googleapis.com/auth/yt-analytics.readonly",
         ...(includeRevenue ? ["https://www.googleapis.com/auth/yt-analytics-monetary.readonly"] : []),
       ];
@@ -1053,16 +1108,23 @@ export function registerYoutubeRoutes(app: Express) {
       const authenticatedUser = await getAuthenticatedUser(req);
       if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
       const db = getAdminClient();
-      const { data, error } = await db.from("social_channels").select("social_channel_id, external_channel_id, handle, display_name, avatar_url, is_dashboard_enabled, status, last_synced_at, youtube_channel_profiles(subscriber_count, view_count, video_count)").eq("profile_id", authenticatedUser.user.id).eq("platform", "youtube").order("created_at", { ascending: true });
+      const { data, error } = await db.from("social_channels").select("social_channel_id, external_channel_id, handle, display_name, avatar_url, is_dashboard_enabled, status, last_synced_at, youtube_channel_profiles(subscriber_count, view_count, video_count), platform_oauth_grants(granted_scopes)").eq("profile_id", authenticatedUser.user.id).eq("platform", "youtube").order("created_at", { ascending: true });
       if (error) throw error;
-      return res.status(200).json({ channels: data || [] });
+      const channels = (data || []).map((row) => {
+        const grantRelation = row.platform_oauth_grants as { granted_scopes?: string[] } | { granted_scopes?: string[] }[] | null;
+        const grant = Array.isArray(grantRelation) ? grantRelation[0] : grantRelation;
+        const { platform_oauth_grants: _omit, ...rest } = row;
+        return { ...rest, can_manage_content: hasWriteScope(grant?.granted_scopes) };
+      });
+      return res.status(200).json({ channels });
     } catch (error) {
       return toErrorResponse(res, error, "YOUTUBE_UNAVAILABLE");
     }
   });
 
-  // Everything currently synced for one channel, for exploring what YouTube's APIs expose while
-  // the real dashboard design is still being decided. Not meant to be a permanent dashboard route.
+  // Everything currently synced for one channel. Backs the "원본 데이터" management page
+  // (channel profile, videos, analytics breakdowns, comments) — the video/comment management
+  // routes below operate on the same social_contents/social_comments rows this returns.
   app.get("/api/connections/youtube/:channelId/raw-data", async (req, res) => {
     try {
       const authenticatedUser = await getAuthenticatedUser(req);
@@ -1104,6 +1166,84 @@ export function registerYoutubeRoutes(app: Express) {
     }
   });
 
+  app.patch("/api/connections/youtube/:channelId/videos/:contentId", async (req, res) => {
+    try {
+      const authenticatedUser = await getAuthenticatedUser(req);
+      if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
+      const channelId = readId(req.params.channelId);
+      const contentId = readId(req.params.contentId);
+      if (!channelId || !contentId) return sendError(res, 400, "INVALID_INPUT", "A valid channel ID and video ID are required.");
+      const title = typeof req.body?.title === "string" ? req.body.title.trim() : undefined;
+      const description = typeof req.body?.description === "string" ? req.body.description : undefined;
+      if (title === undefined && description === undefined) return sendError(res, 400, "INVALID_INPUT", "Provide a title or description to update.");
+      if (title !== undefined && title.length === 0) return sendError(res, 400, "INVALID_INPUT", "Title cannot be empty.");
+      if (title !== undefined && title.length > 100) return sendError(res, 400, "INVALID_INPUT", "Title cannot exceed 100 characters.");
+      if (description !== undefined && description.length > 5000) return sendError(res, 400, "INVALID_INPUT", "Description cannot exceed 5000 characters.");
+
+      const db = getAdminClient();
+      const channel = await requireOwnedChannel(db, authenticatedUser.user.id, channelId);
+      const grant = await getGrantForChannel(db, channel);
+      requireWriteScope(grant);
+      const video = await requireOwnedVideo(db, channelId, contentId);
+      const youtubeVideo = (Array.isArray(video.youtube_videos) ? video.youtube_videos[0] : video.youtube_videos) as { category_external_id?: string | null; tags?: string[] | null; default_language?: string | null } | null;
+      const accessToken = await refreshGrantAccessToken(db, grant);
+
+      // videos.update replaces the whole snippet part, so fields the user didn't touch must be
+      // resent from our own copy or Google will clear them.
+      const snippet: JsonRecord = {
+        title: title ?? video.title ?? "",
+        description: description ?? video.body_text ?? "",
+        categoryId: youtubeVideo?.category_external_id || undefined,
+        tags: youtubeVideo?.tags || undefined,
+        defaultLanguage: youtubeVideo?.default_language || undefined,
+      };
+      const url = new URL("https://www.googleapis.com/youtube/v3/videos");
+      url.search = new URLSearchParams({ part: "snippet" }).toString();
+      await googleJson(url, accessToken, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: video.external_content_id, snippet }),
+      });
+
+      const { data: updated, error: updateError } = await db
+        .from("social_contents")
+        .update({ title: snippet.title, body_text: snippet.description })
+        .eq("social_content_id", contentId)
+        .select("social_content_id, title, body_text")
+        .single();
+      if (updateError) throw updateError;
+      return res.status(200).json({ video: updated });
+    } catch (error) {
+      return toErrorResponse(res, error, "YOUTUBE_VIDEO_UPDATE_FAILED");
+    }
+  });
+
+  app.delete("/api/connections/youtube/:channelId/videos/:contentId", async (req, res) => {
+    try {
+      const authenticatedUser = await getAuthenticatedUser(req);
+      if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
+      const channelId = readId(req.params.channelId);
+      const contentId = readId(req.params.contentId);
+      if (!channelId || !contentId) return sendError(res, 400, "INVALID_INPUT", "A valid channel ID and video ID are required.");
+      const db = getAdminClient();
+      const channel = await requireOwnedChannel(db, authenticatedUser.user.id, channelId);
+      const grant = await getGrantForChannel(db, channel);
+      requireWriteScope(grant);
+      const video = await requireOwnedVideo(db, channelId, contentId);
+      const accessToken = await refreshGrantAccessToken(db, grant);
+
+      const url = new URL("https://www.googleapis.com/youtube/v3/videos");
+      url.search = new URLSearchParams({ id: video.external_content_id }).toString();
+      await googleJson(url, accessToken, { method: "DELETE" });
+
+      const { error: updateError } = await db.from("social_contents").update({ visibility: "deleted" }).eq("social_content_id", contentId);
+      if (updateError) throw updateError;
+      return res.status(204).send();
+    } catch (error) {
+      return toErrorResponse(res, error, "YOUTUBE_VIDEO_DELETE_FAILED");
+    }
+  });
+
   app.post("/api/connections/youtube/:channelId/sync", async (req, res) => {
     try {
       const authenticatedUser = await getAuthenticatedUser(req);
@@ -1133,6 +1273,134 @@ export function registerYoutubeRoutes(app: Express) {
       return res.status(202).json({ job });
     } catch (error) {
       return toErrorResponse(res, error, "YOUTUBE_COMMENT_SYNC_QUEUE_FAILED");
+    }
+  });
+
+  app.post("/api/connections/youtube/:channelId/comments/:commentId/reply", async (req, res) => {
+    try {
+      const authenticatedUser = await getAuthenticatedUser(req);
+      if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
+      const channelId = readId(req.params.channelId);
+      const commentId = readId(req.params.commentId);
+      if (!channelId || !commentId) return sendError(res, 400, "INVALID_INPUT", "A valid channel ID and comment ID are required.");
+      const body = typeof req.body?.body === "string" ? req.body.body.trim() : "";
+      if (!body) return sendError(res, 400, "INVALID_INPUT", "Reply text is required.");
+      if (body.length > 10_000) return sendError(res, 400, "INVALID_INPUT", "Reply text cannot exceed 10,000 characters.");
+
+      const db = getAdminClient();
+      const channel = await requireOwnedChannel(db, authenticatedUser.user.id, channelId);
+      const grant = await getGrantForChannel(db, channel);
+      requireWriteScope(grant);
+      const target = await requireOwnedComment(db, channelId, commentId);
+      const parentExternalId = await resolveGoogleParentCommentId(db, target);
+      const accessToken = await refreshGrantAccessToken(db, grant);
+
+      const url = new URL("https://www.googleapis.com/youtube/v3/comments");
+      url.search = new URLSearchParams({ part: "snippet" }).toString();
+      const created = await googleJson<GoogleComment>(url, accessToken, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ snippet: { parentId: parentExternalId, textOriginal: body } }),
+      });
+
+      const parentSocialCommentId = target.comment_kind === "reply" ? target.parent_social_comment_id : target.social_comment_id;
+      const snippet = created.snippet || {};
+      const payload = {
+        social_channel_id: channel.social_channel_id,
+        social_content_id: target.social_content_id ?? null,
+        platform: "youtube" as const,
+        external_comment_id: created.id,
+        external_thread_id: parentExternalId,
+        parent_social_comment_id: parentSocialCommentId,
+        comment_kind: "reply" as const,
+        author_external_id: snippet.authorChannelId?.value || null,
+        author_display_name: snippet.authorDisplayName || null,
+        author_avatar_url: snippet.authorProfileImageUrl || null,
+        author_channel_url: snippet.authorChannelUrl || null,
+        body_text: snippet.textOriginal || snippet.textDisplay || body,
+        like_count: snippet.likeCount ?? 0,
+        moderation_status: snippet.moderationStatus || null,
+        source_published_at: snippet.publishedAt || new Date().toISOString(),
+        source_updated_at: snippet.updatedAt || null,
+        visibility_status: "active" as const,
+        authored_by_profile_id: authenticatedUser.user.id,
+        last_synced_at: new Date().toISOString(),
+      };
+      const { data: saved, error: saveError } = await db
+        .from("social_comments")
+        .upsert(payload, { onConflict: "platform,external_comment_id" })
+        .select("social_comment_id, social_channel_id, social_content_id, external_comment_id, parent_social_comment_id, comment_kind, author_display_name, author_avatar_url, body_text, like_count, source_published_at, visibility_status")
+        .single();
+      if (saveError) throw saveError;
+
+      const { data: event, error: eventError } = await db
+        .from("social_comment_events")
+        .insert({
+          social_channel_id: channel.social_channel_id,
+          social_comment_id: saved.social_comment_id,
+          event_type: "reply_created",
+          source_occurred_at: payload.source_published_at,
+          event_payload: { external_comment_id: created.id },
+        })
+        .select("social_comment_event_id, social_channel_id, social_comment_id, event_type, observed_at, source_occurred_at, event_payload")
+        .single();
+      if (eventError) throw eventError;
+      publishCommentEvents(channel.profile_id, [event]);
+
+      return res.status(201).json({ comment: saved });
+    } catch (error) {
+      return toErrorResponse(res, error, "YOUTUBE_COMMENT_REPLY_FAILED");
+    }
+  });
+
+  app.patch("/api/connections/youtube/:channelId/comments/:commentId/moderate", async (req, res) => {
+    try {
+      const authenticatedUser = await getAuthenticatedUser(req);
+      if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
+      const channelId = readId(req.params.channelId);
+      const commentId = readId(req.params.commentId);
+      if (!channelId || !commentId) return sendError(res, 400, "INVALID_INPUT", "A valid channel ID and comment ID are required.");
+      const action = req.body?.action;
+      if (action !== "hide" && action !== "delete") return sendError(res, 400, "INVALID_INPUT", "action must be 'hide' or 'delete'.");
+
+      const db = getAdminClient();
+      const channel = await requireOwnedChannel(db, authenticatedUser.user.id, channelId);
+      const grant = await getGrantForChannel(db, channel);
+      requireWriteScope(grant);
+      const target = await requireOwnedComment(db, channelId, commentId);
+      const accessToken = await refreshGrantAccessToken(db, grant);
+
+      if (action === "hide") {
+        const url = new URL("https://www.googleapis.com/youtube/v3/comments/setModerationStatus");
+        url.search = new URLSearchParams({ id: target.external_comment_id, moderationStatus: "rejected" }).toString();
+        await googleJson(url, accessToken, { method: "POST" });
+        const { error: updateError } = await db.from("social_comments").update({ moderation_status: "rejected", visibility_status: "hidden" }).eq("social_comment_id", commentId);
+        if (updateError) throw updateError;
+      } else {
+        const url = new URL("https://www.googleapis.com/youtube/v3/comments");
+        url.search = new URLSearchParams({ id: target.external_comment_id }).toString();
+        await googleJson(url, accessToken, { method: "DELETE" });
+        const { error: updateError } = await db.from("social_comments").update({ visibility_status: "deleted" }).eq("social_comment_id", commentId);
+        if (updateError) throw updateError;
+      }
+
+      const { data: event, error: eventError } = await db
+        .from("social_comment_events")
+        .insert({
+          social_channel_id: channel.social_channel_id,
+          social_comment_id: commentId,
+          event_type: action === "hide" ? "moderation_changed" : "deleted",
+          source_occurred_at: new Date().toISOString(),
+          event_payload: { action },
+        })
+        .select("social_comment_event_id, social_channel_id, social_comment_id, event_type, observed_at, source_occurred_at, event_payload")
+        .single();
+      if (eventError) throw eventError;
+      publishCommentEvents(channel.profile_id, [event]);
+
+      return res.status(204).send();
+    } catch (error) {
+      return toErrorResponse(res, error, "YOUTUBE_COMMENT_MODERATE_FAILED");
     }
   });
 

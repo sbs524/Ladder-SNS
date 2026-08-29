@@ -47,6 +47,7 @@ interface DashboardProps {
   onOpenComposer: () => void;
   onOpenOnboarding: () => void;
   onOpenAnalysis: (platform?: PlatformType | 'all') => void;
+  onOpenRawData?: () => void;
   publishedPosts?: ScheduledPost[];
 }
 
@@ -55,6 +56,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onOpenComposer,
   onOpenOnboarding,
   onOpenAnalysis,
+  onOpenRawData,
   publishedPosts = [],
 }) => {
   const [activePlatformFilter, setActivePlatformFilter] = useState<PlatformType | 'all'>('all');
@@ -533,7 +535,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
       </div>
 
-      <PlatformConnectionsSection isAuthenticated={user.isLoggedIn} />
+      <PlatformConnectionsSection isAuthenticated={user.isLoggedIn} onOpenRawData={onOpenRawData} />
 
     </div>
   );

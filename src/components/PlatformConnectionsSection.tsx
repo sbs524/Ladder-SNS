@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertCircle, BarChart3, ChevronDown, ExternalLink, Link2, LoaderCircle, MessageSquare, RefreshCw, ShieldCheck, Unplug, Users, Video, Youtube } from 'lucide-react';
+import { AlertCircle, BarChart3, ChevronDown, Database, ExternalLink, Link2, LoaderCircle, MessageSquare, RefreshCw, ShieldCheck, Unplug, Users, Video, Youtube } from 'lucide-react';
 
 type ChannelMetrics = { subscriber_count: number | string | null; view_count: number | string | null; video_count: number | string | null };
 type YouTubeChannel = {
@@ -36,7 +36,7 @@ async function api<T>(path: string, init: RequestInit = {}) {
 }
 
 // Future platforms only need their own card metadata and API adapter in this component.
-export function PlatformConnectionsSection({ isAuthenticated }: { isAuthenticated: boolean }) {
+export function PlatformConnectionsSection({ isAuthenticated, onOpenRawData }: { isAuthenticated: boolean; onOpenRawData?: () => void }) {
   const [opened, setOpened] = useState(false);
   const [channels, setChannels] = useState<YouTubeChannel[]>([]);
   const [loading, setLoading] = useState(false);
@@ -107,7 +107,8 @@ export function PlatformConnectionsSection({ isAuthenticated }: { isAuthenticate
       </div>
 
       {opened && <div className="mt-3 rounded-2xl border border-slate-200/80 bg-white/55 p-3.5 sm:p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5"><Link2 className="w-4 h-4 text-red-500" />YouTube 연동 정보</h3><p className="mt-1 text-[11px] leading-4 text-slate-500">읽기 전용 권한으로 데이터를 수집하며, 게시·수정 권한은 요청하지 않습니다.</p></div>{isAuthenticated && !connected && !loading && <button type="button" onClick={() => window.location.assign('/api/connections/youtube/start')} className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 px-3 py-2 text-[11px] font-extrabold text-white hover:bg-red-700"><Youtube className="w-3.5 h-3.5" />YouTube 채널 연결</button>}</div>
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5"><Link2 className="w-4 h-4 text-red-500" />YouTube 연동 정보</h3><p className="mt-1 text-[11px] leading-4 text-slate-500">읽기 전용 권한으로 데이터를 수집하며, 게시·수정 권한은 요청하지 않습니다.</p></div>{isAuthenticated && !connected && !loading && <button type="button" onClick={() => window.location.assign('/api/connections/youtube/start')} className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 px-3 py-2 text-[11px] font-extrabold text-white hover:bg-red-700"><Youtube className="w-3.5 h-3.5" />YouTube 채널 연결</button>}
+        {isAuthenticated && connected && !loading && onOpenRawData && <button type="button" onClick={onOpenRawData} className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-[11px] font-extrabold text-white hover:bg-slate-800"><Database className="w-3.5 h-3.5" />원본 데이터</button>}</div>
         {!isAuthenticated ? <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/70 px-3 py-2.5 text-[11px] text-indigo-800 flex gap-2"><ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" /><span>연동 상태 확인과 채널 연결은 로그인 후 사용할 수 있습니다.</span></div> : <>
           {error && <div role="alert" className="mt-3 rounded-xl border border-rose-100 bg-rose-50/70 px-3 py-2.5 text-[11px] text-rose-700 flex gap-2"><AlertCircle className="w-4 h-4 shrink-0" />{error}</div>}
           <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-2">{dataTypes.map(({ icon: Icon, title, text }) => <div key={title} className="rounded-xl border border-slate-100 bg-slate-50/70 p-2.5"><Icon className="w-3.5 h-3.5 text-red-500 mb-1.5" /><p className="text-[11px] font-extrabold text-slate-800">{title}</p><p className="mt-0.5 text-[10px] leading-3.5 text-slate-500">{text}</p></div>)}</div>

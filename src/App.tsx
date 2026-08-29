@@ -111,7 +111,7 @@ export function App() {
       <div className="fixed bottom-[-10%] right-[-5%] w-[45vw] h-[35vw] rounded-full bg-rose-100/30 blur-3xl pointer-events-none -z-10" />
       <div className="fixed top-[30%] right-[10%] w-[35vw] h-[35vw] rounded-full bg-sky-100/25 blur-3xl pointer-events-none -z-10" />
 
-      <Navbar user={user} onOpenAuth={() => setAuthModal({ isOpen: true })} onOpenOnboarding={() => { setIsHeroMode(true); setIsRawDataOpen(false); setIsMyPageOpen(false); }} onOpenComposer={() => setIsComposerOpen(true)} onOpenAnalysis={() => handleOpenAnalysis('all')} onOpenRawData={user.isLoggedIn ? () => setIsRawDataOpen(true) : undefined} onOpenMyPage={user.isLoggedIn ? () => setIsMyPageOpen(true) : undefined} onLogout={handleLogout} isHeroMode={isHeroMode} onToggleView={() => { setIsHeroMode((previous) => !previous); setIsRawDataOpen(false); setIsMyPageOpen(false); }} />
+      <Navbar user={user} onOpenAuth={() => setAuthModal({ isOpen: true })} onOpenOnboarding={() => { setIsHeroMode(true); setIsRawDataOpen(false); setIsMyPageOpen(false); }} onOpenComposer={() => setIsComposerOpen(true)} onOpenAnalysis={() => handleOpenAnalysis('all')} onOpenMyPage={user.isLoggedIn ? () => setIsMyPageOpen(true) : undefined} onLogout={handleLogout} isHeroMode={isHeroMode} onToggleView={() => { setIsHeroMode((previous) => !previous); setIsRawDataOpen(false); setIsMyPageOpen(false); }} />
 
       <main className="flex-1 flex flex-col justify-center px-3 sm:px-6 py-2">
         {isHeroMode ? (
@@ -121,7 +121,7 @@ export function App() {
         ) : isRawDataOpen ? (
           <YoutubeRawDataPage onBack={() => setIsRawDataOpen(false)} />
         ) : (
-          <Dashboard user={user} onOpenComposer={() => setIsComposerOpen(true)} onOpenOnboarding={() => setIsHeroMode(true)} onOpenAnalysis={handleOpenAnalysis} publishedPosts={publishedPosts} />
+          <Dashboard user={user} onOpenComposer={() => setIsComposerOpen(true)} onOpenOnboarding={() => setIsHeroMode(true)} onOpenAnalysis={handleOpenAnalysis} onOpenRawData={user.isLoggedIn ? () => setIsRawDataOpen(true) : undefined} publishedPosts={publishedPosts} />
         )}
       </main>
 
