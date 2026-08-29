@@ -1,16 +1,17 @@
 import React from 'react';
-import { Sparkles, LogIn, UserPlus, LogOut, RefreshCw, Plus, Bell, Database } from 'lucide-react';
+import { Sparkles, LogIn, LogOut, RefreshCw, Plus, Bell, Database } from 'lucide-react';
 import ladderMark from '../assets/ladder-mark.png';
 import { UserProfile } from '../types';
 import { PLATFORM_CONFIGS } from '../data/mockData';
 
 interface NavbarProps {
   user: UserProfile;
-  onOpenAuth: (mode: 'login' | 'signup') => void;
+  onOpenAuth: () => void;
   onOpenOnboarding: () => void;
   onOpenComposer: () => void;
   onOpenAnalysis?: () => void;
   onOpenRawData?: () => void;
+  onOpenMyPage?: () => void;
   onLogout: () => void;
   isHeroMode: boolean;
   onToggleView: () => void;
@@ -23,6 +24,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenComposer,
   onOpenAnalysis,
   onOpenRawData,
+  onOpenMyPage,
   onLogout,
   isHeroMode,
   onToggleView,
@@ -111,10 +113,17 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className="flex items-center gap-1 pl-1.5 border-l border-slate-200/50">
             {user.isLoggedIn ? (
               <div className="flex items-center gap-1.5">
-                <div className="w-7 h-7 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
-                  {user.name.charAt(0) || 'U'}
-                </div>
-                <span className="text-xs font-semibold text-slate-800 hidden md:inline">{user.name}</span>
+                <button
+                  id="nav-mypage-btn"
+                  onClick={onOpenMyPage}
+                  title="마이페이지"
+                  className="flex items-center gap-1.5 rounded-xl px-1 py-0.5 hover:bg-white/50 transition-colors"
+                >
+                  <div className="w-7 h-7 rounded-xl overflow-hidden bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                    {user.avatarUrl ? <img src={user.avatarUrl} alt="" className="w-full h-full object-cover" /> : (user.name.charAt(0) || 'U')}
+                  </div>
+                  <span className="text-xs font-semibold text-slate-800 hidden md:inline">{user.name}</span>
+                </button>
                 <button
                   id="nav-logout-btn"
                   onClick={onLogout}
@@ -125,25 +134,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </button>
               </div>
             ) : (
-              <>
-                <button
-                  id="nav-login-btn"
-                  onClick={() => onOpenAuth('login')}
-                  className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-xl text-slate-700 hover:text-slate-900 bg-white/40 hover:bg-white/70 border border-white/60 transition-all"
-                >
-                  <LogIn className="w-3 h-3 text-slate-500" />
-                  <span>로그인</span>
-                </button>
-
-                <button
-                  id="nav-signup-btn"
-                  onClick={() => onOpenAuth('signup')}
-                  className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-xl bg-slate-900 text-white hover:bg-slate-800 transition-all shadow-2xs"
-                >
-                  <UserPlus className="w-3 h-3 text-indigo-300" />
-                  <span>회원가입</span>
-                </button>
-              </>
+              <button
+                id="nav-login-btn"
+                onClick={onOpenAuth}
+                className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-xl bg-slate-900 text-white hover:bg-slate-800 transition-all shadow-2xs"
+              >
+                <LogIn className="w-3 h-3 text-indigo-300" />
+                <span>로그인</span>
+              </button>
             )}
           </div>
 

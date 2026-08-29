@@ -5,7 +5,7 @@
 | 도메인 | 구현 API | 인증 |
 |---|---|---|
 | Health | `GET /api/health` | 불필요 |
-| Authentication | OTP 요청·검증, Google OAuth, 세션·프로필 관리 | API별 상이 |
+| Authentication | OTP 요청·검증, Google OAuth, 세션·프로필 관리, 아바타 업로드, 회원탈퇴 | API별 상이 |
 | Gemini | `POST /api/gemini/analyze`, `POST /api/gemini/advisor` | 현재 미적용 |
 | YouTube 연결·동기화 | OAuth 연결, 채널 조회·해제, 동기화 작업 생성 | 필요 |
 | Social comments | 댓글·이벤트 조회, SSE 스트림 | 필요 |
@@ -145,7 +145,7 @@ Supabase의 OAuth 인가 코드를 받는 내부 콜백이다. 10분짜리 HttpO
 
 ### `PATCH /api/auth/me/profile`
 
-현재 사용자의 서비스 프로필을 변경한다. `profile_id`, 이메일, OAuth 식별자는 수정할 수 없다.
+현재 사용자의 서비스 프로필을 변경한다. `profile_id`, 이메일, OAuth 식별자는 수정할 수 없다. `avatar_url`도 이 API로는 바꿀 수 없으며, 프로필 이미지는 `POST /api/auth/me/avatar` 전용 엔드포인트로만 변경한다.
 
 **인증**: 세션 쿠키 필요
 
@@ -177,7 +177,34 @@ Supabase의 OAuth 인가 코드를 받는 내부 콜백이다. 10분짜리 HttpO
 }
 ```
 
-**오류**: `400 INVALID_INPUT`, `401 UNAUTHENTICATED`, `4xx PROFILE_UPDATE_FAILED`, `503 AUTH_UNAVAILABLE`
+**오류**: `400 INVALID_INPUT`(`avatar_url` 필드를 포함한 경우도 해당), `401 UNAUTHENTICATED`, `4xx PROFILE_UPDATE_FAILED`, `503 AUTH_UNAVAILABLE`
+
+### `POST /api/auth/me/avatar`
+
+프로필 이미지를 업로드하거나 교체한다. 이미지는 Supabase Storage의 `avatars` 버킷(공개 읽기)에 사용자당 하나의 고정 경로(`<profile_id>.<ext>`)로 저장되며, 재업로드 시 기존 파일을 덮어쓴다. 서버는 서비스 role 키로만 버킷에 쓴다.
+
+**인증**: 세션 쿠키 필요
+
+**요청**: `multipart/form-data`, 필드명 `avatar`
+
+| 제약 | 값 |
+|---|---|
+| 허용 포맷 | `image/png`, `image/jpeg`, `image/webp` |
+| 최대 크기 | 2MB |
+
+**200 응답**: `PATCH /api/auth/me/profile`과 같은 `profile` 객체. `avatar_url`에는 캐시 무효화용 쿼리 파라미터(`?v=<timestamp>`)가 붙는다.
+
+**오류**: `400 INVALID_AVATAR`(포맷 불일치 또는 파일 없음), `400 AVATAR_TOO_LARGE`, `401 UNAUTHENTICATED`, `503 AVATAR_UPLOAD_FAILED`
+
+### `DELETE /api/auth/me`
+
+회원탈퇴. 계정을 완전히 삭제하지 않고 다음 순서로 처리한다: (1) Supabase Auth 사용자를 사실상 영구히 ban 처리해 이후 로그인·재가입을 막는다, (2) 연결된 YouTube OAuth 토큰을 Google에 best-effort로 revoke하고 채널·콘텐츠·지표·댓글 등 관련 데이터를 즉시 삭제한다, (3) `profiles`는 삭제하지 않고 `display_name`·`avatar_url`을 비운 뒤 `deleted_at`을 기록해 익명화만 한다(추후 결제·크레딧 감사 추적 보존 목적), (4) 현재 브라우저의 세션 쿠키를 지운다. 각 단계는 재시도해도 안전하다(멱등).
+
+**인증**: 세션 쿠키 필요
+
+**204 응답**: 본문 없음
+
+**오류**: `401 UNAUTHENTICATED`, `503 ACCOUNT_DELETION_FAILED`
 
 ### `POST /api/auth/session/refresh`
 

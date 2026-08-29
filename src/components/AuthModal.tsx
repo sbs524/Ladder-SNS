@@ -1,19 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, CheckCircle2, Clipboard, LogIn, Mail, User, UserPlus, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Clipboard, LogIn, Mail, X } from 'lucide-react';
 import { beginGoogleSignIn, requestEmailOtp, verifyEmailOtp, type AuthSessionResponse } from '../lib/authApi';
 
 interface AuthModalProps {
   isOpen: boolean;
-  mode: 'login' | 'signup';
   onClose: () => void;
   onSuccess: (session: AuthSessionResponse) => void;
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, mode: initialMode, onClose, onSuccess }) => {
-  const [mode, setMode] = useState<'login' | 'signup'>(initialMode);
+export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess }) => {
   const [step, setStep] = useState<'request' | 'verify'>('request');
-  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [token, setToken] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -37,17 +34,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, mode: initialMode,
 
   const requestCode = async (event?: React.FormEvent) => {
     event?.preventDefault();
-    const displayName = name.trim();
     if (!email.trim()) return;
-    if (mode === 'signup' && !displayName) {
-      setError('회원가입에는 이름 또는 크리에이터 닉네임이 필요합니다.');
-      return;
-    }
 
     setIsSubmitting(true);
     setError(null);
     try {
-      const result = await requestEmailOtp(email.trim(), mode === 'signup' ? displayName : undefined);
+      const result = await requestEmailOtp(email.trim());
       setMessage(`인증 코드를 ${email.trim()}(으)로 보냈습니다. ${Math.floor(result.expires_in_seconds / 60)}분 안에 입력해 주세요.`);
       setOtpExpiresAt(Date.now() + result.expires_in_seconds * 1_000);
       setCurrentTime(Date.now());
@@ -97,19 +89,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, mode: initialMode,
       <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="w-full max-w-md glass-panel-elevated rounded-3xl p-6 sm:p-7 relative border border-white/90 shadow-2xl">
         <button onClick={onClose} aria-label="닫기" className="absolute top-5 right-5 p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100/70 transition-colors"><X className="w-5 h-5" /></button>
         <div className="text-center mb-6">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-600/10 text-indigo-600 flex items-center justify-center mx-auto mb-3">{step === 'verify' ? <CheckCircle2 className="w-6 h-6" /> : mode === 'login' ? <LogIn className="w-6 h-6" /> : <UserPlus className="w-6 h-6" />}</div>
-          <h2 className="text-2xl font-extrabold text-slate-900">{step === 'verify' ? '이메일 인증' : mode === 'login' ? 'Ladder SNS 로그인' : 'Ladder SNS 회원가입'}</h2>
+          <div className="w-12 h-12 rounded-2xl bg-indigo-600/10 text-indigo-600 flex items-center justify-center mx-auto mb-3">{step === 'verify' ? <CheckCircle2 className="w-6 h-6" /> : <LogIn className="w-6 h-6" />}</div>
+          <h2 className="text-2xl font-extrabold text-slate-900">{step === 'verify' ? '이메일 인증' : 'Ladder SNS 로그인'}</h2>
           <p className="text-xs text-slate-500 mt-1">{step === 'verify' ? '이메일로 받은 6자리 코드를 입력해 주세요.' : '비밀번호 없이 이메일 또는 Google 계정으로 시작하세요.'}</p>
         </div>
 
         {step === 'request' ? (
           <>
-            <div className="flex rounded-xl bg-slate-100/90 p-1 mb-5 border border-slate-200/80">
-              <button type="button" onClick={() => { setMode('login'); setError(null); }} className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${mode === 'login' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500'}`}>로그인</button>
-              <button type="button" onClick={() => { setMode('signup'); setError(null); }} className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${mode === 'signup' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500'}`}>회원가입</button>
-            </div>
             <form onSubmit={requestCode} className="space-y-3.5">
-              {mode === 'signup' && <div><label className="block text-xs font-semibold text-slate-700 mb-1">이름 또는 크리에이터 닉네임</label><div className="relative"><User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" /><input type="text" value={name} onChange={(event) => setName(event.target.value)} placeholder="예: 홍길동" required className="w-full glass-input pl-10 pr-4 py-2.5 rounded-xl text-sm font-medium text-slate-900" /></div></div>}
               <div><label className="block text-xs font-semibold text-slate-700 mb-1">이메일 주소</label><div className="relative"><Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="creator@example.com" required autoComplete="email" className="w-full glass-input pl-10 pr-4 py-2.5 rounded-xl text-sm font-medium text-slate-900" /></div></div>
               {error && <p role="alert" className="text-xs font-medium text-rose-600">{error}</p>}
               <button type="submit" disabled={isSubmitting} className="w-full py-3 rounded-xl bg-slate-900 text-white font-bold text-sm hover:bg-slate-800 transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50"><Mail className="w-4 h-4 text-indigo-300" /><span>{isSubmitting ? '코드 보내는 중...' : '이메일로 인증 코드 받기'}</span></button>

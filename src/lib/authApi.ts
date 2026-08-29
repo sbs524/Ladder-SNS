@@ -40,10 +40,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-export function requestEmailOtp(email: string, displayName?: string) {
+export function requestEmailOtp(email: string) {
   return request<{ message: string; expires_in_seconds: number }>('/api/auth/otp/request', {
     method: 'POST',
-    body: JSON.stringify({ email, ...(displayName ? { display_name: displayName } : {}) }),
+    body: JSON.stringify({ email }),
   });
 }
 
@@ -71,6 +71,25 @@ export function updateCurrentProfile(changes: {
 
 export function logout() {
   return request<void>('/api/auth/logout', { method: 'POST' });
+}
+
+// Bypasses request(): a FormData body must not get a manually-set Content-Type header (the browser
+// sets its own multipart boundary), but request() always adds 'Content-Type: application/json'
+// whenever a body is present.
+export function uploadAvatar(file: File) {
+  const formData = new FormData();
+  formData.append('avatar', file);
+  return fetch('/api/auth/me/avatar', { method: 'POST', credentials: 'include', body: formData }).then(async (response) => {
+    const body = response.headers.get('content-type')?.includes('application/json')
+      ? ((await response.json()) as { profile: AuthProfile } & ApiErrorPayload)
+      : null;
+    if (!response.ok) throw new Error(body?.error?.message || '이미지를 업로드하지 못했습니다.');
+    return body as { profile: AuthProfile };
+  });
+}
+
+export function deleteAccount() {
+  return request<void>('/api/auth/me', { method: 'DELETE' });
 }
 
 export function beginGoogleSignIn() {

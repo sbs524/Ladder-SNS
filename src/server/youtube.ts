@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Express, Request, Response } from "express";
-import { createClient } from "@supabase/supabase-js";
 import { getAppUrl, getAuthenticatedUser } from "./auth";
+import { ApiError, getAdminClient, requireString, toErrorResponse } from "./supabaseAdmin";
 
 type SocialPlatform = "youtube" | "instagram" | "threads" | "x";
 type GrantStatus = "active" | "requires_reauth" | "revoked" | "error";
@@ -120,32 +120,8 @@ const activeCommentStreams = new Set<CommentStream>();
 let workerTimer: NodeJS.Timeout | null = null;
 let workerBusy = false;
 
-class ApiError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) {
-    super(message);
-  }
-}
-
 function sendError(res: Response, status: number, code: string, message: string) {
   return res.status(status).json({ error: { code, message } });
-}
-
-function toErrorResponse(res: Response, error: unknown, fallbackCode = "YOUTUBE_UNAVAILABLE") {
-  if (error instanceof ApiError) return sendError(res, error.status, error.code, error.message);
-  console.error("YouTube integration error:", error);
-  return sendError(res, 503, fallbackCode, "YouTube integration is temporarily unavailable.");
-}
-
-function requireString(value: string | undefined, name: string) {
-  if (!value) throw new ApiError(503, "YOUTUBE_NOT_CONFIGURED", `${name} is not configured.`);
-  return value;
-}
-
-function getSupabaseConfig() {
-  return {
-    url: requireString(process.env.VITE_SUPABASE_URL, "VITE_SUPABASE_URL"),
-    serviceRoleKey: requireString(process.env.SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY"),
-  };
 }
 
 function getGoogleConfig() {
@@ -153,13 +129,6 @@ function getGoogleConfig() {
     clientId: requireString(process.env.GOOGLE_YOUTUBE_CLIENT_ID, "GOOGLE_YOUTUBE_CLIENT_ID"),
     clientSecret: requireString(process.env.GOOGLE_YOUTUBE_CLIENT_SECRET, "GOOGLE_YOUTUBE_CLIENT_SECRET"),
   };
-}
-
-function getAdminClient() {
-  const { url, serviceRoleKey } = getSupabaseConfig();
-  return createClient(url, serviceRoleKey, {
-    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
-  });
 }
 
 function isProduction() {
@@ -394,6 +363,42 @@ async function requireOwnedGrant(db: ReturnType<typeof getAdminClient>, profileI
 async function getGrantForChannel(db: ReturnType<typeof getAdminClient>, channel: SocialChannel) {
   if (!channel.platform_oauth_grant_id) throw new ApiError(409, "YOUTUBE_CONNECTION_MISSING", "This channel has no active YouTube connection.");
   return requireOwnedGrant(db, channel.profile_id, channel.platform_oauth_grant_id);
+}
+
+// Called from account deletion (src/server/auth.ts). Best-effort revokes each grant's token with
+// Google before deleting our copy — deleting the local ciphertext alone doesn't invalidate a token
+// that's still valid at Google's end. social_channels must be deleted before platform_oauth_grants
+// (which is ON DELETE RESTRICT from social_channels) — same ordering as the per-channel disconnect
+// route below, generalized to every channel owned by the profile.
+export async function deleteAllYoutubeDataForProfile(profileId: string) {
+  const db = getAdminClient();
+  const { data: grants, error } = await db
+    .from("platform_oauth_grants")
+    .select("platform_oauth_grant_id, access_token_ciphertext, refresh_token_ciphertext")
+    .eq("profile_id", profileId);
+  if (error) throw error;
+
+  for (const grant of grants || []) {
+    try {
+      const ciphertext = grant.refresh_token_ciphertext || grant.access_token_ciphertext;
+      if (!ciphertext) continue;
+      const token = decryptToken(ciphertext);
+      await fetch("https://oauth2.googleapis.com/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token }),
+      });
+    } catch (revokeError) {
+      // Google's revoke endpoint being unreachable, or a stale/corrupt ciphertext, must not block
+      // account deletion — this is a best-effort cleanup, not a precondition.
+      console.warn(`Failed to revoke Google token for grant ${grant.platform_oauth_grant_id}:`, revokeError instanceof Error ? revokeError.message : revokeError);
+    }
+  }
+
+  const { error: channelsError } = await db.from("social_channels").delete().eq("profile_id", profileId);
+  if (channelsError) throw channelsError;
+  const { error: grantsError } = await db.from("platform_oauth_grants").delete().eq("profile_id", profileId);
+  if (grantsError) throw grantsError;
 }
 
 function asBigint(value: unknown) {
@@ -1052,7 +1057,7 @@ export function registerYoutubeRoutes(app: Express) {
       if (error) throw error;
       return res.status(200).json({ channels: data || [] });
     } catch (error) {
-      return toErrorResponse(res, error);
+      return toErrorResponse(res, error, "YOUTUBE_UNAVAILABLE");
     }
   });
 

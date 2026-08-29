@@ -6,7 +6,8 @@ import { AuthModal } from './components/AuthModal';
 import { PostComposerModal } from './components/PostComposerModal';
 import { AIAnalysisModal } from './components/AIAnalysisModal';
 import { YoutubeRawDataPage } from './components/YoutubeRawDataPage';
-import { getCurrentSession, logout, updateCurrentProfile, type AuthSessionResponse } from './lib/authApi';
+import { MyPage } from './components/MyPage';
+import { getCurrentSession, logout, updateCurrentProfile, type AuthProfile, type AuthSessionResponse } from './lib/authApi';
 import { UserProfile, PlatformType, ScheduledPost, UserType } from './types';
 
 const PENDING_ONBOARDING_KEY = 'ladder-pending-onboarding';
@@ -52,7 +53,8 @@ export function App() {
   });
   const [isHeroMode, setIsHeroMode] = useState(true);
   const [isRawDataOpen, setIsRawDataOpen] = useState(false);
-  const [authModal, setAuthModal] = useState<{ isOpen: boolean; mode: 'login' | 'signup' }>({ isOpen: false, mode: 'login' });
+  const [isMyPageOpen, setIsMyPageOpen] = useState(false);
+  const [authModal, setAuthModal] = useState<{ isOpen: boolean }>({ isOpen: false });
   const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [publishedPosts, setPublishedPosts] = useState<ScheduledPost[]>([]);
   const [analysisModal, setAnalysisModal] = useState<{ isOpen: boolean; platform: PlatformType | 'all' }>({ isOpen: false, platform: 'all' });
@@ -69,7 +71,7 @@ export function App() {
       }
     }
     setUser((previous) => userFromSession(session, previous, pending));
-    setAuthModal({ isOpen: false, mode: 'login' });
+    setAuthModal({ isOpen: false });
     setIsHeroMode(false);
   };
 
@@ -78,16 +80,29 @@ export function App() {
   }, []);
 
   const handleOpenAnalysis = (platform: PlatformType | 'all' = 'all') => setAnalysisModal({ isOpen: true, platform });
-  const handleOnboardingAuth = (mode: 'login' | 'signup', pending: PendingOnboarding) => {
+  const handleOnboardingAuth = (pending: PendingOnboarding) => {
     window.sessionStorage.setItem(PENDING_ONBOARDING_KEY, JSON.stringify(pending));
-    setAuthModal({ isOpen: true, mode });
+    setAuthModal({ isOpen: true });
   };
   const handleLogout = () => {
     void logout().catch(() => undefined).finally(() => {
       setUser((previous) => ({ ...previous, isLoggedIn: false }));
       setIsHeroMode(true);
       setIsRawDataOpen(false);
+      setIsMyPageOpen(false);
     });
+  };
+  const handleProfileUpdated = (profile: AuthProfile) => {
+    setUser((previous) => ({
+      ...previous,
+      name: profile.display_name || previous.email.split('@')[0] || previous.name,
+      avatarUrl: profile.avatar_url || undefined,
+    }));
+  };
+  const handleAccountDeleted = () => {
+    setUser((previous) => ({ ...previous, isLoggedIn: false }));
+    setIsMyPageOpen(false);
+    setIsHeroMode(true);
   };
 
   return (
@@ -96,11 +111,13 @@ export function App() {
       <div className="fixed bottom-[-10%] right-[-5%] w-[45vw] h-[35vw] rounded-full bg-rose-100/30 blur-3xl pointer-events-none -z-10" />
       <div className="fixed top-[30%] right-[10%] w-[35vw] h-[35vw] rounded-full bg-sky-100/25 blur-3xl pointer-events-none -z-10" />
 
-      <Navbar user={user} onOpenAuth={(mode) => setAuthModal({ isOpen: true, mode })} onOpenOnboarding={() => { setIsHeroMode(true); setIsRawDataOpen(false); }} onOpenComposer={() => setIsComposerOpen(true)} onOpenAnalysis={() => handleOpenAnalysis('all')} onOpenRawData={user.isLoggedIn ? () => setIsRawDataOpen(true) : undefined} onLogout={handleLogout} isHeroMode={isHeroMode} onToggleView={() => { setIsHeroMode((previous) => !previous); setIsRawDataOpen(false); }} />
+      <Navbar user={user} onOpenAuth={() => setAuthModal({ isOpen: true })} onOpenOnboarding={() => { setIsHeroMode(true); setIsRawDataOpen(false); setIsMyPageOpen(false); }} onOpenComposer={() => setIsComposerOpen(true)} onOpenAnalysis={() => handleOpenAnalysis('all')} onOpenRawData={user.isLoggedIn ? () => setIsRawDataOpen(true) : undefined} onOpenMyPage={user.isLoggedIn ? () => setIsMyPageOpen(true) : undefined} onLogout={handleLogout} isHeroMode={isHeroMode} onToggleView={() => { setIsHeroMode((previous) => !previous); setIsRawDataOpen(false); setIsMyPageOpen(false); }} />
 
       <main className="flex-1 flex flex-col justify-center px-3 sm:px-6 py-2">
         {isHeroMode ? (
           <OnboardingHero initialProfile={user} onRequestAuth={handleOnboardingAuth} onSkipToDashboard={() => setIsHeroMode(false)} />
+        ) : isMyPageOpen ? (
+          <MyPage user={user} onBack={() => setIsMyPageOpen(false)} onProfileUpdated={handleProfileUpdated} onAccountDeleted={handleAccountDeleted} />
         ) : isRawDataOpen ? (
           <YoutubeRawDataPage onBack={() => setIsRawDataOpen(false)} />
         ) : (
@@ -110,7 +127,7 @@ export function App() {
 
       <footer className="w-full text-center py-2 text-[11px] text-slate-400 font-medium"><span>Ladder SNS — 유튜브 · 인스타그램 · 쓰레드 · X 통합 관리</span></footer>
 
-      {authModal.isOpen && <AuthModal isOpen={authModal.isOpen} mode={authModal.mode} onClose={() => setAuthModal({ isOpen: false, mode: 'login' })} onSuccess={applySession} />}
+      {authModal.isOpen && <AuthModal isOpen={authModal.isOpen} onClose={() => setAuthModal({ isOpen: false })} onSuccess={applySession} />}
       {isComposerOpen && <PostComposerModal isOpen={isComposerOpen} availablePlatforms={user.selectedPlatforms} onPublish={(post) => setPublishedPosts((previous) => [post, ...previous])} onClose={() => setIsComposerOpen(false)} />}
       {analysisModal.isOpen && <AIAnalysisModal isOpen={analysisModal.isOpen} user={user} initialPlatform={analysisModal.platform} onClose={() => setAnalysisModal({ isOpen: false, platform: 'all' })} />}
     </div>

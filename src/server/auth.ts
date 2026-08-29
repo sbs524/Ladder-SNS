@@ -1,5 +1,8 @@
 import type { Express, Request, Response } from "express";
 import { createClient, type Session, type User } from "@supabase/supabase-js";
+import multer from "multer";
+import { getAdminClient, toErrorResponse } from "./supabaseAdmin";
+import { deleteAllYoutubeDataForProfile } from "./youtube";
 
 type UserType = "individual" | "team" | "enterprise";
 
@@ -21,6 +24,13 @@ const OAUTH_PKCE_COOKIE = "ladder_oauth_pkce";
 const OTP_COOLDOWN_MS = 60_000;
 const OTP_EXPIRY_SECONDS = 300;
 const otpRequests = new Map<string, number>();
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const AVATAR_MIME_EXTENSIONS: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: AVATAR_MAX_BYTES },
+  fileFilter: (_req, file, cb) => cb(null, Object.prototype.hasOwnProperty.call(AVATAR_MIME_EXTENSIONS, file.mimetype)),
+}).single("avatar");
 
 function getAuthConfig() {
   const url = process.env.VITE_SUPABASE_URL;
@@ -291,6 +301,9 @@ export function registerAuthRoutes(app: Express) {
   });
 
   app.patch("/api/auth/me/profile", async (req, res) => {
+    if (req.body?.avatar_url !== undefined) {
+      return sendError(res, 400, "INVALID_INPUT", "Use POST /api/auth/me/avatar to change the profile image.");
+    }
     const displayName = readDisplayName(req.body?.display_name);
     const userType = req.body?.user_type === undefined ? undefined : readUserType(req.body.user_type);
     const onboardingCompleted = req.body?.onboarding_completed;
@@ -320,6 +333,79 @@ export function registerAuthRoutes(app: Express) {
       return res.status(200).json({ profile: data as Profile });
     } catch (error) {
       return sendError(res, 503, "AUTH_UNAVAILABLE", errorMessage(error));
+    }
+  });
+
+  app.post("/api/auth/me/avatar", (req, res) => {
+    avatarUpload(req, res, async (uploadError) => {
+      if (uploadError) {
+        const code = uploadError instanceof multer.MulterError && uploadError.code === "LIMIT_FILE_SIZE" ? "AVATAR_TOO_LARGE" : "INVALID_AVATAR";
+        return sendError(res, 400, code, "Upload a PNG, JPEG, or WebP image up to 2MB.");
+      }
+      const file = req.file;
+      if (!file) return sendError(res, 400, "INVALID_AVATAR", "Upload a PNG, JPEG, or WebP image up to 2MB.");
+
+      try {
+        const authenticatedUser = await getAuthenticatedUser(req);
+        if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
+
+        const extension = AVATAR_MIME_EXTENSIONS[file.mimetype];
+        const objectPath = `${authenticatedUser.user.id}.${extension}`;
+        const admin = getAdminClient();
+
+        const { error: uploadErr } = await admin.storage
+          .from("avatars")
+          .upload(objectPath, file.buffer, { contentType: file.mimetype, upsert: true });
+        if (uploadErr) throw uploadErr;
+
+        // The object path is stable and overwritten in place (upsert), so a cache-busting query
+        // param is required or browsers/CDNs will keep serving the previous image at this URL.
+        const { data: publicUrlData } = admin.storage.from("avatars").getPublicUrl(objectPath);
+        const avatarUrl = `${publicUrlData.publicUrl}?v=${Date.now()}`;
+
+        const { data, error } = await admin
+          .from("profiles")
+          .update({ avatar_url: avatarUrl })
+          .eq("profile_id", authenticatedUser.user.id)
+          .select("profile_id, display_name, avatar_url, user_type, onboarding_completed_at, created_at, updated_at")
+          .single();
+        if (error) throw error;
+        return res.status(200).json({ profile: data as Profile });
+      } catch (error) {
+        return toErrorResponse(res, error, "AVATAR_UPLOAD_FAILED");
+      }
+    });
+  });
+
+  // 회원탈퇴. Never hard-deletes the auth.users row: profiles.profile_id -> auth.users is
+  // ON DELETE CASCADE, so deleting the auth user would destroy the profile row and any future
+  // billing/audit trail (docs/기획서.md §5.1 plans a soft-delete for exactly this reason). Instead:
+  // ban the login (no re-signup with this email afterward), wipe YouTube tokens/data immediately
+  // (기획서 §10 — no payment linkage there, so full deletion is correct), then anonymize (not
+  // remove) the profile row. Every step is a no-op on an already-applied change, so a client retry
+  // after a partial failure (e.g. banned but not yet anonymized) is safe.
+  app.delete("/api/auth/me", async (req, res) => {
+    try {
+      const authenticatedUser = await getAuthenticatedUser(req);
+      if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
+      const profileId = authenticatedUser.user.id;
+      const admin = getAdminClient();
+
+      const { error: banError } = await admin.auth.admin.updateUserById(profileId, { ban_duration: "876000h" });
+      if (banError) throw banError;
+
+      await deleteAllYoutubeDataForProfile(profileId);
+
+      const { error: anonymizeError } = await admin
+        .from("profiles")
+        .update({ display_name: null, avatar_url: null, deleted_at: new Date().toISOString() })
+        .eq("profile_id", profileId);
+      if (anonymizeError) throw anonymizeError;
+
+      clearSessionCookies(res);
+      return res.status(204).send();
+    } catch (error) {
+      return toErrorResponse(res, error, "ACCOUNT_DELETION_FAILED");
     }
   });
 

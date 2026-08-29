@@ -5,7 +5,7 @@ import { PlatformType, UserProfile, UserType } from '../types';
 
 interface OnboardingHeroProps {
   initialProfile: UserProfile;
-  onRequestAuth: (mode: 'login' | 'signup', pending: { userType: UserType; selectedPlatforms: PlatformType[] }) => void;
+  onRequestAuth: (pending: { userType: UserType; selectedPlatforms: PlatformType[] }) => void;
   onSkipToDashboard?: () => void;
 }
 
@@ -30,8 +30,8 @@ export const OnboardingHero: React.FC<OnboardingHeroProps> = ({ initialProfile, 
     });
   };
 
-  const beginAuth = (mode: 'login' | 'signup') => {
-    onRequestAuth(mode, { userType: selectedType, selectedPlatforms });
+  const beginAuth = () => {
+    onRequestAuth({ userType: selectedType, selectedPlatforms });
   };
 
   return (
@@ -83,7 +83,7 @@ export const OnboardingHero: React.FC<OnboardingHeroProps> = ({ initialProfile, 
           <div className="relative z-10 space-y-4">
             <div className="text-center"><div className="w-11 h-11 rounded-2xl bg-indigo-600/10 text-indigo-600 flex items-center justify-center mx-auto mb-3"><Sparkles className="w-5 h-5" /></div><h2 className="text-xl sm:text-2xl font-extrabold text-slate-900">계정을 인증하고 시작하세요</h2><p className="text-xs text-slate-500 mt-1">비밀번호 없이 이메일 인증 코드 또는 Google 계정으로 로그인합니다.</p></div>
             <div className="rounded-xl bg-indigo-50/80 border border-indigo-100 px-3 py-2.5 text-xs text-indigo-800"><strong>{selectedType === 'individual' ? '개인' : selectedType === 'team' ? '팀' : '기업'}</strong> · {selectedPlatforms.length}개 플랫폼 선택 완료</div>
-            <div className="grid sm:grid-cols-2 gap-2.5"><button type="button" onClick={() => beginAuth('signup')} className="py-3 rounded-xl bg-slate-900 text-white font-bold text-sm hover:bg-slate-800">회원가입</button><button type="button" onClick={() => beginAuth('login')} className="py-3 rounded-xl bg-white/80 text-slate-700 border border-slate-200 font-bold text-sm hover:bg-white">로그인</button></div>
+            <button type="button" onClick={beginAuth} className="w-full py-3 rounded-xl bg-slate-900 text-white font-bold text-sm hover:bg-slate-800">로그인</button>
             <button type="button" onClick={() => setStep(2)} className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800"><ArrowLeft className="w-3.5 h-3.5" />플랫폼 다시 선택</button>
             {onSkipToDashboard && <button type="button" onClick={onSkipToDashboard} className="block mx-auto text-[11px] text-slate-400 hover:text-slate-600">데모 대시보드 둘러보기</button>}
           </div>
