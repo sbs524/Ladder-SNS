@@ -8,7 +8,7 @@
 | Authentication | OTP 요청·검증, Google OAuth, 세션·프로필 관리, 아바타 업로드, 회원탈퇴 | API별 상이 |
 | Gemini | `POST /api/gemini/analyze`, `POST /api/gemini/advisor` | 현재 미적용 |
 | YouTube 연결·동기화 | OAuth 연결, 채널 조회·해제, 동기화 작업 생성, 원본 데이터 조회, 영상 수정·삭제, 댓글 답글·모더레이션 | 필요 |
-| Metrics | 대시보드 통합 지표 조회 | 필요 |
+| Metrics | 대시보드 통합 지표 조회, AI 분석용 심층 지표 조회 | 필요 |
 | Social comments | 댓글·이벤트 조회, SSE 스트림 | 필요 |
 
 인증은 Supabase Auth를 사용한다. 이메일 OTP와 Google OAuth는 모두 `auth.users`의 한 사용자에 연결되고, 앱 프로필은 `public.profiles`에 자동 생성된다.
@@ -507,3 +507,33 @@ Google `videos.delete`로 영상을 영구 삭제하고, 로컬 `social_contents
 `shares`는 콘텐츠 단위로는 YouTube API에서 제공되지 않아 항상 `0`이다. 채널 단위 공유 수는 Analytics API에서 받아 `engagementRate` 계산에는 반영된다.
 
 새 플랫폼을 추가할 때는 `social_channels`에 채널 행을 만들고 `src/server/metrics.ts`의 `loadDailyMetrics()`에 해당 플랫폼의 일별 지표 소스를 더하면 이 엔드포인트가 자동으로 집계한다.
+
+### `GET /api/metrics/insights`
+
+AI 분석 화면(`AIAnalysisModal`)이 쓰는 심층 지표. 채널별로 반환한다. 모든 계산 공식은
+[`과금_및_지표_정의.md`](과금_및_지표_정의.md) §5에 정의돼 있고, **코드와 문서 중 하나만 고치면 안 된다.**
+
+**인증**: 세션 쿠키 필요
+
+| 쿼리 | 필수 | 설명 |
+|---|---|---|
+| `range` | 아니오 | `30d`(기본) 또는 `90d`. 심층 지표는 7일로는 표본이 부족하다 |
+
+**채널별 응답 필드**
+
+| 필드 | 설명 |
+|---|---|
+| `engagementRate` / `shareRate` / `commentRatio` | 기간 합계 기준 비율(%) |
+| `retentionRate` / `clickThroughRate` | **조회수 가중평균**. 데이터 없으면 `null` |
+| `saveRate` | 현재 항상 `null` — `videosAddedToPlaylists` 수집 추가 필요 |
+| `topAudienceAge` | `{ ageGroup, sharePercent }` 또는 `null` |
+| `virality` | `{ score, note, components }`. `score`가 `null`이면 `note`에 이유 |
+| `peakTime` | `{ available, reason, totalVideos, best, slots }` |
+| `formats` / `bestFormat` | 포맷별 통계. 표본 3개 미만 포맷은 `efficiencyScore: null` |
+
+**표본이 부족하면 숫자 대신 `null` + 사유를 반환한다.** 영상 몇 개로 "저녁이 최적"이라고
+단정하면 목업과 다를 게 없기 때문이다. 클라이언트는 `available` / `null`을 반드시 분기 처리한다.
+
+`peakTime`은 YouTube Analytics API에 시간 디멘션이 없어 **우리 DB의 업로드 이력으로 직접 집계**한다
+(발행 후 3일 조회수의 KST 시간대별 중앙값 ÷ 채널 전체 중앙값). 상관이지 인과가 아니므로
+UI 문구는 "이 시간대에 올린 영상이 잘 됐다"여야 한다.
