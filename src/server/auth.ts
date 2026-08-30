@@ -5,12 +5,14 @@ import { getAdminClient, toErrorResponse } from "./supabaseAdmin";
 import { deleteAllYoutubeDataForProfile } from "./youtube";
 
 type UserType = "individual" | "team" | "enterprise";
+export type BillingPlan = "free" | "plus";
 
 type Profile = {
   profile_id: string;
   display_name: string | null;
   avatar_url: string | null;
   user_type: UserType | null;
+  plan: BillingPlan;
   onboarding_completed_at: string | null;
   created_at: string;
   updated_at: string;
@@ -175,6 +177,13 @@ function isOtpRequestRateLimited(req: Request, email: string) {
   return false;
 }
 
+/** 요금제 조회. 프로필이 없거나 조회에 실패하면 무료로 취급한다 — 실패가 결제 우회가 되면 안 된다. */
+export async function getPlanForProfile(profileId: string): Promise<BillingPlan> {
+  const { data, error } = await getAdminClient().from("profiles").select("plan").eq("profile_id", profileId).maybeSingle();
+  if (error || !data) return "free";
+  return (data.plan as BillingPlan) === "plus" ? "plus" : "free";
+}
+
 export async function getAuthenticatedUser(req: Request): Promise<AuthenticatedUser | null> {
   const accessToken = readCookie(req, ACCESS_TOKEN_COOKIE);
   if (!accessToken) return null;
@@ -185,7 +194,7 @@ export async function getAuthenticatedUser(req: Request): Promise<AuthenticatedU
 async function getProfile(accessToken: string, profileId: string): Promise<Profile | null> {
   const { data, error } = await createSupabaseClient(accessToken)
     .from("profiles")
-    .select("profile_id, display_name, avatar_url, user_type, onboarding_completed_at, created_at, updated_at")
+    .select("profile_id, display_name, avatar_url, user_type, plan, onboarding_completed_at, created_at, updated_at")
     .eq("profile_id", profileId)
     .maybeSingle();
   if (error) throw error;
@@ -327,7 +336,7 @@ export function registerAuthRoutes(app: Express) {
         .from("profiles")
         .update(changes)
         .eq("profile_id", authenticatedUser.user.id)
-        .select("profile_id, display_name, avatar_url, user_type, onboarding_completed_at, created_at, updated_at")
+        .select("profile_id, display_name, avatar_url, user_type, plan, onboarding_completed_at, created_at, updated_at")
         .single();
       if (error) return sendError(res, errorStatus(error), "PROFILE_UPDATE_FAILED", errorMessage(error));
       return res.status(200).json({ profile: data as Profile });
@@ -367,7 +376,7 @@ export function registerAuthRoutes(app: Express) {
           .from("profiles")
           .update({ avatar_url: avatarUrl })
           .eq("profile_id", authenticatedUser.user.id)
-          .select("profile_id, display_name, avatar_url, user_type, onboarding_completed_at, created_at, updated_at")
+          .select("profile_id, display_name, avatar_url, user_type, plan, onboarding_completed_at, created_at, updated_at")
           .single();
         if (error) throw error;
         return res.status(200).json({ profile: data as Profile });

@@ -29,11 +29,15 @@ import {
   ArrowUpRight,
   Bot
 } from 'lucide-react';
-import { PlatformType, UserProfile, AIAnalysisReport, EngagementDeepMetric, ContentFormatStat } from '../types';
-import { PLATFORM_CONFIGS, ENGAGEMENT_DEEP_METRICS, CONTENT_FORMAT_STATS, DEFAULT_AI_REPORT } from '../data/mockData';
+import { PlatformType, UserProfile, AIAnalysisReport } from '../types';
+import { PLATFORM_CONFIGS, DEFAULT_AI_REPORT } from '../data/mockData';
+import { fetchInsights, type ChannelInsights, type InsightsResponse } from '../lib/insightsApi';
+import { PlusLock, LockedValue } from './PlusLock';
 
 interface AIAnalysisModalProps {
   isOpen: boolean;
+  /** Phase 4에서 결제 플로우가 생기면 연결한다. 없으면 잠금 오버레이가 가격만 안내한다. */
+  onUpgrade?: () => void;
   onClose: () => void;
   user: UserProfile;
   initialPlatform?: PlatformType | 'all';
@@ -43,6 +47,7 @@ type TabType = 'metrics' | 'advice' | 'advisor';
 
 export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
   isOpen,
+  onUpgrade,
   onClose,
   user,
   initialPlatform = 'all',
@@ -59,6 +64,9 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
   const [report, setReport] = useState<AIAnalysisReport>(DEFAULT_AI_REPORT);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState<boolean>(false);
   const [isLiveAiMode, setIsLiveAiMode] = useState<boolean>(false);
+  const [insights, setInsights] = useState<InsightsResponse | null>(null);
+  const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
 
   // AI Advisor Chat State
   const [chatMessages, setChatMessages] = useState<Array<{ id: string; sender: 'user' | 'ai'; text: string; time: string }>>([
@@ -77,6 +85,26 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
       setSelectedPlatform(initialPlatform);
     }
   }, [initialPlatform]);
+
+  useEffect(() => {
+    if (!isOpen || !user.isLoggedIn) return;
+    const controller = new AbortController();
+    setIsLoadingInsights(true);
+    setInsightsError(null);
+    fetchInsights('30d', controller.signal)
+      .then(setInsights)
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setInsightsError(error instanceof Error ? error.message : '심층 지표를 불러오지 못했습니다.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoadingInsights(false);
+      });
+    return () => controller.abort();
+  }, [isOpen, user.isLoggedIn]);
+
+  const isPlus = insights?.plan === 'plus';
+  const youtubeInsights: ChannelInsights[] = insights?.channels ?? [];
 
   // Request fresh AI Analysis from backend
   const handleFetchAiAnalysis = async () => {
@@ -328,200 +356,267 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
           {/* ===================== TAB 1: PARTICIPATION & DETAILED METRICS ===================== */}
           {activeTab === 'metrics' && (
             <div className="space-y-4">
-              
-              {/* Top Quick Highlights Banner */}
-              <div className="glass-card rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 bg-gradient-to-r from-indigo-50/70 via-purple-50/50 to-rose-50/70">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-600/10 text-indigo-700 flex items-center justify-center font-bold">
-                    <Flame className="w-5 h-5 text-rose-500" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-extrabold text-slate-900">
-                      최고 인게이지먼트 플랫폼: <span className="text-indigo-600">쓰레드 (Threads 9.8%)</span>
-                    </h4>
-                    <p className="text-[11px] text-slate-600 mt-0.5">
-                      업계 평균(3.2%) 대비 <strong className="text-indigo-600 font-bold">+206%</strong> 높은 참여율을 기록 중입니다.
-                    </p>
-                  </div>
+
+              {!user.isLoggedIn && (
+                <div className="glass-card rounded-2xl p-8 text-center space-y-1">
+                  <p className="text-xs font-bold text-slate-700">로그인이 필요합니다</p>
+                  <p className="text-[11px] text-slate-500">로그인하고 채널을 연동하면 실제 지표로 심층 분석을 볼 수 있습니다.</p>
                 </div>
+              )}
 
-                <div className="flex items-center gap-4 text-xs font-semibold text-slate-700 bg-white/70 px-3 py-1.5 rounded-xl border border-white/80">
-                  <span className="flex items-center gap-1 text-slate-600">
-                    <Clock className="w-3.5 h-3.5 text-indigo-500" />
-                    <span>최적 발행 골든타임: <strong>오후 8:30 ~ 9:00</strong></span>
-                  </span>
+              {user.isLoggedIn && isLoadingInsights && !insights && (
+                <div className="glass-card rounded-2xl p-8 text-center text-xs text-slate-500">
+                  심층 지표를 불러오는 중…
                 </div>
-              </div>
+              )}
 
-              {/* 4-Platform Detailed Engagement Metric Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                {userPlatforms
-                  .filter((p) => selectedPlatform === 'all' || selectedPlatform === p)
-                  .map((p) => {
-                    const metric = ENGAGEMENT_DEEP_METRICS[p];
-                    const conf = PLATFORM_CONFIGS[p];
-                    if (!metric) return null;
+              {insightsError && (
+                <div className="glass-card rounded-2xl p-6 text-center space-y-1">
+                  <p className="text-xs font-semibold text-rose-600">{insightsError}</p>
+                  <p className="text-[11px] text-slate-500">잠시 후 다시 시도해 주세요.</p>
+                </div>
+              )}
 
-                    return (
-                      <div
-                        key={p}
-                        id={`metric-deep-${p}`}
-                        className="glass-card rounded-2xl p-4 space-y-3 transition-all hover:bg-white/80"
-                      >
-                        {/* Card Header */}
-                        <div className="flex items-center justify-between pb-2 border-b border-slate-200/50">
-                          <div className="flex items-center gap-2">
-                            <div
-                              className="w-7 h-7 rounded-xl flex items-center justify-center text-white shadow-2xs"
-                              style={{ backgroundColor: conf.color }}
-                            >
-                              {p === 'youtube' && <Youtube className="w-4 h-4" />}
-                              {p === 'instagram' && <Instagram className="w-4 h-4" />}
-                              {p === 'threads' && <AtSign className="w-4 h-4" />}
-                              {p === 'x' && <Twitter className="w-4 h-4" />}
-                            </div>
-                            <div>
-                              <h5 className="font-bold text-xs text-slate-900">{conf.koreanName}</h5>
-                              <span className="text-[10px] text-slate-400">심층 성과 지표</span>
-                            </div>
-                          </div>
-                          <span className="text-[11px] font-extrabold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md">
-                            참여율 {metric.engagementRate}%
-                          </span>
-                        </div>
+              {insights && youtubeInsights.length === 0 && (
+                <div className="glass-card rounded-2xl p-8 text-center space-y-1">
+                  <p className="text-xs font-bold text-slate-700">연동된 채널이 없습니다</p>
+                  <p className="text-[11px] text-slate-500">채널을 연동하면 실제 지표로 심층 분석을 볼 수 있습니다.</p>
+                </div>
+              )}
 
-                        {/* Progress Indicator Bars for Save, Share, Retention */}
-                        <div className="space-y-2 text-[11px]">
-                          <div>
-                            <div className="flex justify-between text-slate-600 mb-1">
-                              <span>시청/열람 완독률</span>
-                              <span className="font-bold text-slate-900">{metric.retentionRate}%</span>
-                            </div>
-                            <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                              <div
-                                className="h-full rounded-full bg-indigo-500"
-                                style={{ width: `${metric.retentionRate}%` }}
-                              />
-                            </div>
-                          </div>
+              {youtubeInsights.map((channel) => {
+                const conf = PLATFORM_CONFIGS.youtube;
 
-                          <div>
-                            <div className="flex justify-between text-slate-600 mb-1">
-                              <span>콘텐츠 저장(Save)률</span>
-                              <span className="font-bold text-slate-900">{metric.saveRate}%</span>
-                            </div>
-                            <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                              <div
-                                className="h-full rounded-full bg-rose-500"
-                                style={{ width: `${Math.min(metric.saveRate * 4, 100)}%` }}
-                              />
-                            </div>
-                          </div>
-
-                          <div>
-                            <div className="flex justify-between text-slate-600 mb-1">
-                              <span>공유 & 리포스트 비율</span>
-                              <span className="font-bold text-slate-900">{metric.shareRate}%</span>
-                            </div>
-                            <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                              <div
-                                className="h-full rounded-full bg-sky-500"
-                                style={{ width: `${Math.min(metric.shareRate * 4, 100)}%` }}
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Additional Quick Data */}
-                        <div className="pt-2 border-t border-slate-200/50 space-y-1.5 text-[10px] text-slate-600">
-                          <div className="flex items-center justify-between">
-                            <span className="text-slate-400">바이럴 잠재 지수</span>
-                            <span className="font-bold text-emerald-600 flex items-center gap-0.5">
-                              <Zap className="w-3 h-3 text-amber-500 fill-amber-500" />
-                              {metric.viralityScore} / 100
+                const deepPanel = (
+                  <div className="glass-card rounded-2xl p-4 space-y-3">
+                    <h5 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                      <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>심층 성과 지표</span>
+                    </h5>
+                    <div className="space-y-2 text-[11px]">
+                      {[
+                        { label: '시청 지속률', value: channel.retentionRate, bar: 'bg-indigo-500' },
+                        { label: '저장(재생목록 추가)률', value: channel.saveRate, bar: 'bg-rose-500' },
+                        { label: '노출 클릭률(CTR)', value: channel.clickThroughRate, bar: 'bg-sky-500' },
+                      ].map((row) => (
+                        <div key={row.label}>
+                          <div className="flex justify-between text-slate-600 mb-1">
+                            <span>{row.label}</span>
+                            <span className="font-bold text-slate-900">
+                              {row.value === null ? <LockedValue /> : `${row.value.toFixed(1)}%`}
                             </span>
                           </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-slate-400">골든 타임</span>
-                            <span className="font-semibold text-slate-800">{metric.peakTime}</span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-slate-400">주력 연령대</span>
-                            <span className="font-semibold text-slate-800">{metric.topAudienceAge}</span>
+                          <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                            <div className={`h-full rounded-full ${row.bar}`} style={{ width: `${Math.min(row.value ?? 60, 100)}%` }} />
                           </div>
                         </div>
-
-                      </div>
-                    );
-                  })}
-              </div>
-
-              {/* Format Efficiency Breakdown Table */}
-              <div className="glass-panel rounded-2xl p-4 border border-white/70 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
-                      <TrendingUp className="w-3.5 h-3.5 text-indigo-600" />
-                      <span>포맷별 제작 효율성 & ROI 비교</span>
-                    </h4>
-                    <p className="text-[10px] text-slate-500 mt-0.5">
-                      숏폼, 릴스, 텍스트 타래, 캐러셀 등 포맷별 반응률 분석
-                    </p>
+                      ))}
+                    </div>
+                    <div className="pt-2 border-t border-slate-200/50 flex items-center justify-between text-[10px]">
+                      <span className="text-slate-400">주력 연령대</span>
+                      <span className="font-semibold text-slate-800">
+                        {channel.topAudienceAge
+                          ? `${channel.topAudienceAge.ageGroup.replace('age', '')}세 (${channel.topAudienceAge.sharePercent}%)`
+                          : <LockedValue width="w-16" />}
+                      </span>
+                    </div>
                   </div>
-                  <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md">
-                    쇼츠 & 텍스트 타래 효율 최고
-                  </span>
-                </div>
+                );
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-200/60 text-[11px] font-semibold text-slate-400">
-                        <th className="pb-2 pl-2">콘텐츠 포맷</th>
-                        <th className="pb-2">플랫폼</th>
-                        <th className="pb-2">평균 도달/조회</th>
-                        <th className="pb-2">참여율</th>
-                        <th className="pb-2">평균 저장/공유</th>
-                        <th className="pb-2 pr-2 text-right">종합 효율 점수</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200/40">
-                      {CONTENT_FORMAT_STATS.filter((fmt) => userPlatforms.includes(fmt.platform)).map((fmt) => {
-                        const conf = PLATFORM_CONFIGS[fmt.platform];
-                        return (
-                          <tr key={fmt.id} className="hover:bg-white/50 transition-colors">
-                            <td className="py-2.5 pl-2 font-bold text-slate-900 flex items-center gap-1.5">
-                              <span>{fmt.formatName}</span>
-                            </td>
-                            <td className="py-2.5">
-                              <span className="inline-flex items-center gap-1 font-semibold text-slate-700">
-                                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: conf.color }} />
-                                {conf.koreanName}
-                              </span>
-                            </td>
-                            <td className="py-2.5 font-semibold text-slate-800">
-                              {fmt.avgViews.toLocaleString()}회
-                            </td>
-                            <td className="py-2.5 font-bold text-indigo-600">
-                              {fmt.avgEngagement}%
-                            </td>
-                            <td className="py-2.5 text-slate-600">
-                              {fmt.avgSavesOrShares.toLocaleString()}건
-                            </td>
-                            <td className="py-2.5 pr-2 text-right">
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-extrabold text-[11px] bg-emerald-50 text-emerald-700">
-                                <ArrowUpRight className="w-3 h-3 text-emerald-500" />
-                                {fmt.efficiencyScore}점
-                              </span>
-                            </td>
+                const viralityPanel = (
+                  <div className="glass-card rounded-2xl p-4 space-y-2">
+                    <h5 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                      <span>바이럴 점수</span>
+                    </h5>
+                    {channel.virality && channel.virality.score === null ? (
+                      <p className="text-[11px] text-slate-500 py-3">{channel.virality.note}</p>
+                    ) : (
+                      <>
+                        <p className="text-2xl font-extrabold text-slate-900">
+                          {channel.virality ? channel.virality.score : <LockedValue width="w-12" />}
+                          <span className="text-xs font-semibold text-slate-400"> / 100</span>
+                        </p>
+                        <div className="space-y-1 text-[10px] text-slate-600 pt-1 border-t border-slate-200/50">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">도달 배수 (조회/구독자)</span>
+                            <span className="font-semibold">
+                              {channel.virality && channel.virality.components.reachMultiple !== null
+                                ? `${channel.virality.components.reachMultiple.toFixed(2)}배`
+                                : <LockedValue />}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">비구독자 시청 비중</span>
+                            <span className="font-semibold">
+                              {channel.virality && channel.virality.components.nonSubscriberShare !== null
+                                ? `${channel.virality.components.nonSubscriberShare.toFixed(1)}%`
+                                : <LockedValue />}
+                            </span>
+                          </div>
+                        </div>
+                        {channel.virality && channel.virality.note && (
+                          <p className="text-[10px] text-amber-700 bg-amber-50 rounded-lg px-2 py-1">{channel.virality.note}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+
+                const peakPanel = (
+                  <div className="glass-card rounded-2xl p-4 space-y-2">
+                    <h5 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>업로드 시간대별 반응</span>
+                    </h5>
+                    {channel.peakTime && !channel.peakTime.available ? (
+                      <p className="text-[11px] text-slate-500 py-3">{channel.peakTime.reason}</p>
+                    ) : (
+                      <>
+                        <p className="text-sm font-extrabold text-slate-900">
+                          {channel.peakTime && channel.peakTime.best ? channel.peakTime.best.label : <LockedValue width="w-20" />}
+                        </p>
+                        <p className="text-[11px] text-slate-600">
+                          {channel.peakTime && channel.peakTime.best
+                            ? `이 시간대에 올린 영상이 채널 평균의 ${channel.peakTime.best.multiple}배 · 영상 ${channel.peakTime.best.videoCount}개 기준`
+                            : '표본 수와 함께 표시됩니다.'}
+                        </p>
+                        <p className="text-[10px] text-slate-400 pt-1 border-t border-slate-200/50">
+                          업로드 시각과 성과의 상관입니다. 인과가 아니므로 참고용으로 보세요.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                );
+
+                const formatRows = channel.formats ?? [
+                  { format: 'shorts' as const, formatName: '쇼츠 (3분 이하)', videoCount: 0, medianInitialViews: 0, medianShares: null, efficiencyScore: null },
+                  { format: 'longform' as const, formatName: '롱폼 (10분 초과)', videoCount: 0, medianInitialViews: 0, medianShares: null, efficiencyScore: null },
+                ];
+
+                const formatPanel = (
+                  <div className="glass-panel rounded-2xl p-4 border border-white/70 space-y-3">
+                    <div>
+                      <h4 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                        <TrendingUp className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>포맷별 효율</span>
+                      </h4>
+                      <p className="text-[10px] text-slate-500 mt-0.5">발행 후 3일 조회수 중앙값 기준</p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-200/60 text-[11px] font-semibold text-slate-400">
+                            <th className="pb-2 pl-2">포맷</th>
+                            <th className="pb-2">영상 수</th>
+                            <th className="pb-2">초기 조회수(중앙값)</th>
+                            <th className="pb-2 pr-2 text-right">효율 점수</th>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200/40">
+                          {formatRows.map((fmt) => (
+                            <tr key={fmt.format} className="hover:bg-white/50 transition-colors">
+                              <td className="py-2.5 pl-2 font-bold text-slate-900">{fmt.formatName}</td>
+                              <td className="py-2.5 text-slate-600">{fmt.videoCount}개</td>
+                              <td className="py-2.5 font-semibold text-slate-800">
+                                {channel.formats ? `${fmt.medianInitialViews.toLocaleString()}회` : <LockedValue width="w-14" />}
+                              </td>
+                              <td className="py-2.5 pr-2 text-right">
+                                {fmt.efficiencyScore === null ? (
+                                  channel.formats ? (
+                                    <span className="text-[10px] text-slate-400">표본 부족</span>
+                                  ) : (
+                                    <LockedValue />
+                                  )
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-extrabold text-[11px] bg-emerald-50 text-emerald-700">
+                                    <ArrowUpRight className="w-3 h-3 text-emerald-500" />
+                                    {fmt.efficiencyScore}점
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {channel.bestFormat && (
+                      <p className="text-[11px] text-slate-600">
+                        가장 효율이 높은 포맷: <strong className="text-indigo-600">{channel.bestFormat.formatName}</strong>
+                        {` · 영상 ${channel.bestFormat.videoCount}개 기준`}
+                      </p>
+                    )}
+                  </div>
+                );
 
+                return (
+                  <div key={channel.socialChannelId} className="space-y-3">
+
+                    <div className="glass-card rounded-2xl p-4 space-y-3">
+                      <div className="flex items-center justify-between pb-2 border-b border-slate-200/50">
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 rounded-xl flex items-center justify-center text-white shadow-2xs" style={{ backgroundColor: conf.color }}>
+                            <Youtube className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h5 className="font-bold text-xs text-slate-900">{channel.displayName}</h5>
+                            <span className="text-[10px] text-slate-400">
+                              {channel.handle || '유튜브'} · 구독자 {channel.subscribers.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-semibold text-slate-500">최근 {insights ? insights.days : 30}일</span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        {[
+                          { label: '참여율', value: `${channel.engagementRate}%`, tone: 'text-rose-600' },
+                          { label: '공유율', value: `${channel.shareRate}%`, tone: 'text-sky-600' },
+                          { label: '댓글 비율', value: `${channel.commentRatio}%`, tone: 'text-indigo-600' },
+                        ].map((item) => (
+                          <div key={item.label} className="rounded-xl bg-white/60 py-2">
+                            <span className="text-[10px] text-slate-500">{item.label}</span>
+                            <p className={`text-sm font-extrabold mt-0.5 ${item.tone}`}>{item.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {isPlus ? deepPanel : (
+                      <PlusLock
+                        title="심층 성과 지표는 Plus 전용"
+                        description="시청 지속률·저장률·CTR·주력 연령대를 실제 채널 데이터로 확인할 수 있습니다."
+                        onUpgrade={onUpgrade}
+                      >
+                        {deepPanel}
+                      </PlusLock>
+                    )}
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {isPlus ? viralityPanel : (
+                        <PlusLock title="바이럴 점수는 Plus 전용" onUpgrade={onUpgrade} compact>
+                          {viralityPanel}
+                        </PlusLock>
+                      )}
+                      {isPlus ? peakPanel : (
+                        <PlusLock title="시간대 분석은 Plus 전용" onUpgrade={onUpgrade} compact>
+                          {peakPanel}
+                        </PlusLock>
+                      )}
+                    </div>
+
+                    {isPlus ? formatPanel : (
+                      <PlusLock
+                        title="포맷별 효율은 Plus 전용"
+                        description="쇼츠·미들폼·롱폼·라이브 중 어떤 포맷이 이 채널에서 실제로 잘 되는지 비교합니다."
+                        onUpgrade={onUpgrade}
+                      >
+                        {formatPanel}
+                      </PlusLock>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 

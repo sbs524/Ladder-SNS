@@ -1,5 +1,5 @@
 import type { Express, Response } from "express";
-import { getAuthenticatedUser } from "./auth";
+import { getAuthenticatedUser, getPlanForProfile } from "./auth";
 import { getAdminClient, toErrorResponse } from "./supabaseAdmin";
 import { num, utcDayString } from "./metrics";
 
@@ -31,6 +31,13 @@ const MIN_VIDEOS_PER_SLOT = 3;
 const MIN_VIDEOS_PER_FORMAT = 3;
 const INITIAL_PERFORMANCE_DAYS = 3; // 발행일 포함 3일
 const MIN_SUBSCRIBERS_FOR_REACH = 10;
+
+// Plus-only fields. The basic engagement ratios stay free so that connecting a channel is still
+// worth doing on the free plan (기획서 6.1) — what Plus buys is the interpretation layer.
+//
+// These are withheld by the server, not hidden by the client. A CSS blur over data that was
+// already sent is not a paywall; anyone can read it in devtools.
+const PLUS_ONLY_FIELDS = ["retentionRate", "clickThroughRate", "saveRate", "topAudienceAge", "virality", "peakTime", "formats", "bestFormat"] as const;
 
 export type FormatId = "shorts" | "midform" | "longform" | "live";
 
@@ -275,6 +282,7 @@ export function registerInsightsRoutes(app: Express) {
       const authenticatedUser = await getAuthenticatedUser(req);
       if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
 
+      const plan = await getPlanForProfile(authenticatedUser.user.id);
       const range: RangeKey = req.query.range === "90d" ? "90d" : "30d";
       const days = RANGE_DAYS[range];
       const since = utcDayString(days - 1);
@@ -290,7 +298,7 @@ export function registerInsightsRoutes(app: Express) {
       if (channelError) throw channelError;
       const channels = channelData || [];
       if (channels.length === 0) {
-        return res.status(200).json({ range, days, connected: false, channels: [] });
+        return res.status(200).json({ range, days, plan, connected: false, channels: [] });
       }
       const channelIds = channels.map((channel) => channel.social_channel_id as string);
 
@@ -429,7 +437,16 @@ export function registerInsightsRoutes(app: Express) {
         };
       });
 
-      return res.status(200).json({ range, days, connected: true, channels: result });
+      const payload =
+        plan === "plus"
+          ? result.map((channel) => ({ ...channel, locked: false, lockedFields: [] as string[] }))
+          : result.map((channel) => {
+              const visible = { ...channel } as Record<string, unknown>;
+              for (const field of PLUS_ONLY_FIELDS) visible[field] = null;
+              return { ...visible, locked: true, lockedFields: [...PLUS_ONLY_FIELDS] };
+            });
+
+      return res.status(200).json({ range, days, plan, connected: true, channels: payload });
     } catch (error) {
       return toErrorResponse(res, error, "METRICS_INSIGHTS_FAILED");
     }
