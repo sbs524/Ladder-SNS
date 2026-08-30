@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { 
   Users, 
   TrendingUp, 
@@ -22,7 +22,9 @@ import {
   Twitter,
   RefreshCw,
   SlidersHorizontal,
-  ChevronRight
+  ChevronRight,
+  Link2,
+  LoaderCircle
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -33,15 +35,28 @@ import {
   Tooltip, 
   CartesianGrid
 } from 'recharts';
-import { PlatformType, UserProfile, PostItem, ScheduledPost } from '../types';
-import { 
-  PLATFORM_CONFIGS, 
-  INITIAL_PLATFORM_METRICS, 
-  CHART_DATA_7DAYS,
-  RECENT_NOTIFICATIONS 
-} from '../data/mockData';
+import { PlatformType, UserProfile, ScheduledPost } from '../types';
+import { PLATFORM_CONFIGS } from '../data/mockData';
+import { fetchMetricsOverview, type MetricsOverview, type OverviewPost, type PlatformSummary } from '../lib/metricsApi';
 
 import { PlatformConnectionsSection } from './PlatformConnectionsSection';
+
+function relativeDay(value: string | null) {
+  if (!value) return '';
+  const published = new Date(value);
+  if (Number.isNaN(published.getTime())) return '';
+  const days = Math.floor((Date.now() - published.getTime()) / 86_400_000);
+  if (days <= 0) return '오늘';
+  if (days === 1) return '어제';
+  if (days < 30) return `${days}일 전`;
+  return published.toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' });
+}
+
+function compactNumber(value: number) {
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return value.toLocaleString();
+}
+
 interface DashboardProps {
   user: UserProfile;
   onOpenComposer: () => void;
@@ -61,80 +76,84 @@ export const Dashboard: React.FC<DashboardProps> = ({
 }) => {
   const [activePlatformFilter, setActivePlatformFilter] = useState<PlatformType | 'all'>('all');
   const [timeRange, setTimeRange] = useState<'7d' | '30d'>('7d');
+  const [overview, setOverview] = useState<MetricsOverview | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Filter stats based on user's selected platforms
+  const loadOverview = useCallback((range: '7d' | '30d', signal?: AbortSignal) => {
+    if (!user.isLoggedIn) {
+      setOverview(null);
+      return;
+    }
+    setIsLoading(true);
+    setLoadError(null);
+    fetchMetricsOverview(range, signal)
+      .then((data) => setOverview(data))
+      .catch((error: unknown) => {
+        if (signal?.aborted) return;
+        setLoadError(error instanceof Error ? error.message : '지표를 불러오지 못했습니다.');
+      })
+      .finally(() => {
+        if (!signal?.aborted) setIsLoading(false);
+      });
+  }, [user.isLoggedIn]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadOverview(timeRange, controller.signal);
+    return () => controller.abort();
+  }, [loadOverview, timeRange]);
+
+  // Onboarding decides which platform cards render; the overview decides which of them have a
+  // connected channel behind them. Unconnected ones show a connect prompt, never a number.
   const activePlatforms = useMemo(() => {
     return user.selectedPlatforms.length > 0
       ? user.selectedPlatforms
       : (['youtube', 'instagram', 'threads', 'x'] as PlatformType[]);
   }, [user.selectedPlatforms]);
 
-  // Aggregate overview metrics
-  const aggregateMetrics = useMemo(() => {
-    let totalFollowers = 0;
-    let totalViews = 0;
-    let totalEngagement = 0;
-    let validCount = 0;
+  const summaryByPlatform = useMemo(() => {
+    const map = new Map<PlatformType, PlatformSummary>();
+    overview?.platforms.forEach((summary) => map.set(summary.platform, summary));
+    return map;
+  }, [overview]);
 
-    activePlatforms.forEach((p) => {
-      const stats = INITIAL_PLATFORM_METRICS[p];
-      if (stats) {
-        totalFollowers += stats.followers;
-        totalViews += stats.impressions;
-        totalEngagement += stats.engagementRate;
-        validCount++;
-      }
-    });
+  const connectedPlatforms = useMemo(
+    () => activePlatforms.filter((p) => summaryByPlatform.get(p)?.connected),
+    [activePlatforms, summaryByPlatform],
+  );
 
-    const avgEngagement = validCount > 0 ? (totalEngagement / validCount).toFixed(1) : '0';
+  const aggregateMetrics = useMemo(() => ({
+    totalFollowers: overview?.totals.followers ?? 0,
+    totalViews: overview?.totals.views ?? 0,
+    avgEngagement: (overview?.totals.engagementRate ?? 0).toFixed(1),
+    growthPercent: overview?.totals.growthPercent ?? null,
+  }), [overview]);
 
-    return {
-      totalFollowers,
-      totalViews,
-      avgEngagement,
-      growthRate: '+14.2%',
-    };
-  }, [activePlatforms]);
+  const chartData = useMemo(() => overview?.chart ?? [], [overview]);
 
-  // Chart data calculation
-  const chartData = useMemo(() => {
-    return CHART_DATA_7DAYS.map((item) => {
-      const total = activePlatforms.reduce((acc, p) => acc + (item[p] || 0), 0);
-      return {
-        ...item,
-        total,
-      };
-    });
-  }, [activePlatforms]);
-
-  // Aggregated recent posts across active platforms
   const allRecentPosts = useMemo(() => {
-    const list: (PostItem & { platform: PlatformType })[] = [];
-    activePlatforms.forEach((p) => {
-      const data = INITIAL_PLATFORM_METRICS[p];
-      if (data && data.recentPosts) {
-        data.recentPosts.forEach((post) => {
-          list.push({ ...post, platform: p });
-        });
-      }
-    });
-    // Posts published from the composer this session, newest first
-    const justPublished = publishedPosts.flatMap((post) =>
+    const synced = (overview?.recentPosts ?? []).filter((post) => activePlatforms.includes(post.platform));
+    // Posts published from the composer this session are not persisted yet, so they are merged
+    // in on the client and disappear on refresh.
+    const justPublished: OverviewPost[] = publishedPosts.flatMap((post) =>
       post.platforms
         .filter((p) => activePlatforms.includes(p))
         .map((p) => ({
           id: `${post.id}-${p}`,
+          platform: p,
           title: post.content,
-          date: post.scheduledDate,
+          publishedAt: post.scheduledDate,
+          permalink: null,
+          thumbnailUrl: null,
+          views: 0,
           likes: 0,
           comments: 0,
           shares: 0,
-          views: 0,
-          platform: p,
         })),
     );
-    return [...justPublished, ...list];
-  }, [activePlatforms, publishedPosts]);
+    return [...justPublished, ...synced];
+  }, [activePlatforms, overview, publishedPosts]);
 
   const filteredPosts = useMemo(() => {
     if (activePlatformFilter === 'all') return allRecentPosts;
@@ -232,11 +251,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
         >
           <div>
             <p className="text-[11px] font-semibold text-slate-500 flex items-center gap-1">
-              <span>주간 총 도달·노출</span>
+              <span>최근 {overview?.days ?? 7}일 조회수</span>
               <Sparkles className="w-2.5 h-2.5 text-sky-400 opacity-0 group-hover:opacity-100 transition-opacity" />
             </p>
             <h3 className="text-xl font-extrabold text-slate-900 tracking-tight mt-0.5">
-              {(aggregateMetrics.totalViews / 1000).toFixed(1)}k
+              {compactNumber(aggregateMetrics.totalViews)}
             </h3>
           </div>
           <div className="w-8 h-8 rounded-xl bg-sky-500/10 text-sky-600 flex items-center justify-center group-hover:scale-105 transition-transform">
@@ -269,11 +288,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
           className="glass-card rounded-2xl p-3.5 flex items-center justify-between cursor-pointer hover:bg-white/70 transition-all group"
         >
           <div>
-            <p className="text-[11px] font-semibold text-slate-500">전주 대비 성장</p>
-            <h3 className="text-xl font-extrabold text-emerald-600 tracking-tight mt-0.5 flex items-center gap-0.5">
-              <ArrowUpRight className="w-4 h-4 stroke-[3]" />
-              <span>{aggregateMetrics.growthRate}</span>
-            </h3>
+            <p className="text-[11px] font-semibold text-slate-500">직전 {overview?.days ?? 7}일 대비</p>
+            {aggregateMetrics.growthPercent === null ? (
+              <h3 className="text-xl font-extrabold text-slate-400 tracking-tight mt-0.5">–</h3>
+            ) : (
+              <h3
+                className={`text-xl font-extrabold tracking-tight mt-0.5 flex items-center gap-0.5 ${
+                  aggregateMetrics.growthPercent >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                }`}
+              >
+                {aggregateMetrics.growthPercent >= 0 ? (
+                  <ArrowUpRight className="w-4 h-4 stroke-[3]" />
+                ) : (
+                  <ArrowDownRight className="w-4 h-4 stroke-[3]" />
+                )}
+                <span>{Math.abs(aggregateMetrics.growthPercent).toFixed(1)}%</span>
+              </h3>
+            )}
           </div>
           <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center group-hover:scale-105 transition-transform">
             <TrendingUp className="w-4 h-4" />
@@ -285,16 +316,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
       {/* 3. Platform Breakdown Cards Strip (Compact Horizontal Grid) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
         {activePlatforms.map((p) => {
-          const stats = INITIAL_PLATFORM_METRICS[p];
           const conf = PLATFORM_CONFIGS[p];
-          if (!stats) return null;
+          const stats = summaryByPlatform.get(p);
+          const isConnected = Boolean(stats?.connected);
 
           return (
             <div
               key={p}
               id={`platform-card-${p}`}
-              onClick={() => setActivePlatformFilter(activePlatformFilter === p ? 'all' : p)}
-              className={`cursor-pointer rounded-2xl p-3 glass-card-compact transition-all ${
+              onClick={() => isConnected && setActivePlatformFilter(activePlatformFilter === p ? 'all' : p)}
+              className={`rounded-2xl p-3 glass-card-compact transition-all ${
+                isConnected ? 'cursor-pointer' : 'opacity-70'
+              } ${
                 activePlatformFilter === p ? 'ring-2 ring-indigo-500/40 bg-white/70' : 'hover:bg-white/60'
               }`}
             >
@@ -311,38 +344,62 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </div>
                   <div>
                     <span className="font-bold text-xs text-slate-900">{conf.koreanName}</span>
-                    <span className="text-[10px] text-slate-400 block -mt-0.5">{stats.handle}</span>
+                    <span className="text-[10px] text-slate-400 block -mt-0.5">
+                      {isConnected ? stats?.handle || stats?.displayName : '연동 안 됨'}
+                    </span>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onOpenAnalysis(p);
-                    }}
-                    className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50/90 hover:bg-indigo-100 px-1.5 py-0.5 rounded-md flex items-center gap-0.5 transition-all shadow-2xs"
-                    title={`${conf.koreanName} 세부 분석 및 AI 조언`}
-                  >
-                    <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
-                    <span>분석</span>
-                  </button>
-                  <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md">
-                    {stats.followersChange}
-                  </span>
-                </div>
+                {isConnected && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenAnalysis(p);
+                      }}
+                      className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50/90 hover:bg-indigo-100 px-1.5 py-0.5 rounded-md flex items-center gap-0.5 transition-all shadow-2xs"
+                      title={`${conf.koreanName} 세부 분석 및 AI 조언`}
+                    >
+                      <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
+                      <span>분석</span>
+                    </button>
+                    {stats!.followersChange !== 0 && (
+                      <span
+                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
+                          stats!.followersChange > 0 ? 'text-emerald-600 bg-emerald-50' : 'text-rose-600 bg-rose-50'
+                        }`}
+                      >
+                        {stats!.followersChange > 0 ? '+' : ''}
+                        {stats!.followersChange.toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
 
-              <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-slate-200/40">
-                <div>
-                  <span className="text-[10px] text-slate-500">팔로워/구독</span>
-                  <p className="text-xs font-bold text-slate-800">{stats.followers.toLocaleString()}</p>
+              {isConnected ? (
+                <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-slate-200/40">
+                  <div>
+                    <span className="text-[10px] text-slate-500">팔로워/구독</span>
+                    <p className="text-xs font-bold text-slate-800">{stats!.followers.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500">최근 {overview?.days ?? 7}일 조회</span>
+                    <p className="text-xs font-bold text-slate-800">{compactNumber(stats!.views)}</p>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-[10px] text-slate-500">도달/노출</span>
-                  <p className="text-xs font-bold text-slate-800">{(stats.impressions / 1000).toFixed(1)}k</p>
-                </div>
-              </div>
+              ) : (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenOnboarding();
+                  }}
+                  className="w-full mt-1 pt-1.5 border-t border-slate-200/40 text-[10px] font-semibold text-indigo-600 hover:text-indigo-800 flex items-center justify-center gap-1"
+                >
+                  <Link2 className="w-3 h-3" />
+                  <span>연동하기</span>
+                </button>
+              )}
             </div>
           );
         })}
@@ -359,7 +416,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
                 <span>플랫폼별 도달·조회 트렌드</span>
               </h4>
-              <p className="text-[10px] text-slate-500 mt-0.5">최근 7일간의 채널별 성장 추이</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">최근 {overview?.days ?? 7}일간의 채널별 조회수 추이</p>
             </div>
             
             <div className="flex items-center gap-1.5">
@@ -388,6 +445,32 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           <div className="h-[200px] w-full">
+            {isLoading && !overview ? (
+              <div className="h-full flex items-center justify-center text-[11px] text-slate-400 gap-1.5">
+                <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+                <span>지표를 불러오는 중…</span>
+              </div>
+            ) : loadError ? (
+              <div className="h-full flex flex-col items-center justify-center gap-2 text-center">
+                <p className="text-[11px] text-rose-600">{loadError}</p>
+                <button
+                  onClick={() => loadOverview(timeRange)}
+                  className="text-[11px] font-semibold text-indigo-600 hover:underline flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>다시 시도</span>
+                </button>
+              </div>
+            ) : !overview?.hasData ? (
+              <div className="h-full flex flex-col items-center justify-center gap-1.5 text-center px-4">
+                <p className="text-[11px] font-semibold text-slate-600">아직 수집된 지표가 없습니다</p>
+                <p className="text-[10px] text-slate-400">
+                  {connectedPlatforms.length === 0
+                    ? '채널을 연동하면 여기에 실제 지표가 표시됩니다.'
+                    : '연동 정보에서 동기화를 실행하면 지표가 채워집니다.'}
+                </p>
+              </div>
+            ) : (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
                 <defs>
@@ -446,12 +529,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 )}
               </AreaChart>
             </ResponsiveContainer>
+            )}
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-200/40">
             <span className="flex items-center gap-1">
               <Sparkles className="w-3 h-3 text-indigo-500" />
-              <span>동시 발행 시 도달 효율 <strong>+28%</strong> 상승</span>
+              <span>참여율 = (좋아요+댓글+공유) / 조회수</span>
             </span>
             <button
               onClick={onOpenComposer}
@@ -481,6 +565,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
           {/* Posts compact list */}
           <div className="space-y-2 overflow-y-auto max-h-[200px] pr-1">
+            {filteredPosts.length === 0 && (
+              <p className="text-[11px] text-slate-400 py-6 text-center">
+                {connectedPlatforms.length === 0 ? '채널을 연동하면 발행한 콘텐츠가 표시됩니다.' : '아직 수집된 콘텐츠가 없습니다.'}
+              </p>
+            )}
             {filteredPosts.slice(0, 3).map((post) => {
               const conf = PLATFORM_CONFIGS[post.platform];
               return (
@@ -496,12 +585,24 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       />
                       <span className="font-semibold text-slate-700">{conf.koreanName}</span>
                     </div>
-                    <span>{post.date}</span>
+                    <span>{relativeDay(post.publishedAt)}</span>
                   </div>
 
-                  <p className="text-xs font-medium text-slate-800 line-clamp-1 mb-1.5">
-                    {post.title}
-                  </p>
+                  {post.permalink ? (
+                    <a
+                      href={post.permalink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs font-medium text-slate-800 line-clamp-1 mb-1.5 hover:text-indigo-600 flex items-center gap-1"
+                    >
+                      <span className="line-clamp-1">{post.title}</span>
+                      <ExternalLink className="w-2.5 h-2.5 shrink-0 text-slate-400" />
+                    </a>
+                  ) : (
+                    <p className="text-xs font-medium text-slate-800 line-clamp-1 mb-1.5">
+                      {post.title}
+                    </p>
+                  )}
 
                   <div className="flex items-center gap-3 text-[10px] font-medium text-slate-500">
                     <span className="flex items-center gap-0.5">
@@ -523,7 +624,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           <div className="pt-2 mt-1 border-t border-slate-200/40 flex items-center justify-between text-[10px] text-slate-500">
-            <span>{activePlatforms.length}개 채널 실시간 연동 완료</span>
+            <span>
+              {connectedPlatforms.length}/{activePlatforms.length}개 플랫폼 연동됨
+              {overview?.connectedCount ? ` · ${overview.recentPosts.length}개 콘텐츠 동기화` : ''}
+            </span>
             <button
               onClick={onOpenOnboarding}
               className="text-indigo-600 hover:underline font-medium"

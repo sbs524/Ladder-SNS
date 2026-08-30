@@ -8,6 +8,7 @@
 | Authentication | OTP 요청·검증, Google OAuth, 세션·프로필 관리, 아바타 업로드, 회원탈퇴 | API별 상이 |
 | Gemini | `POST /api/gemini/analyze`, `POST /api/gemini/advisor` | 현재 미적용 |
 | YouTube 연결·동기화 | OAuth 연결, 채널 조회·해제, 동기화 작업 생성, 원본 데이터 조회, 영상 수정·삭제, 댓글 답글·모더레이션 | 필요 |
+| Metrics | 대시보드 통합 지표 조회 | 필요 |
 | Social comments | 댓글·이벤트 조회, SSE 스트림 | 필요 |
 
 인증은 Supabase Auth를 사용한다. 이메일 OTP와 Google OAuth는 모두 `auth.users`의 한 사용자에 연결되고, 앱 프로필은 `public.profiles`에 자동 생성된다.
@@ -423,3 +424,86 @@ Google `videos.delete`로 영상을 영구 삭제하고, 로컬 `social_contents
 **인증**: 세션 쿠키 필요
 
 현재는 동일 서버 인스턴스에서 열린 스트림으로 즉시 전달한다. 여러 인스턴스 간 실시간 fan-out은 추후 Supabase Realtime 또는 Redis를 연결할 때 이 이벤트 테이블을 공통 소스로 사용한다.
+
+
+---
+
+## Metrics
+
+### `GET /api/metrics/overview`
+
+대시보드 한 화면이 필요로 하는 모든 집계를 한 번에 반환한다. 연동된 모든 플랫폼의 채널을 대상으로 하며, 연동되지 않은 플랫폼도 `connected: false`로 함께 내려간다.
+
+**인증**: 세션 쿠키 필요
+
+| 쿼리 | 필수 | 설명 |
+|---|---|---|
+| `range` | 아니오 | `7d`(기본) 또는 `30d`. 집계 기간 |
+
+**계산 규칙**
+
+| 지표 | 정의 |
+|---|---|
+| `totals.engagementRate`, `platforms[].engagementRate` | `(좋아요 + 댓글 + 공유) / 조회수 × 100`, 기간 합계 기준 |
+| `totals.views`, `platforms[].views` | `youtube_channel_daily_metrics.views`의 기간 합계 |
+| `totals.growthPercent`, `platforms[].viewsChangePercent` | 현재 기간 조회수 vs 직전 동일 길이 기간 조회수. **비교 기준이 0이면 `null`** |
+| `platforms[].followers` | `youtube_channel_profiles.subscriber_count` 현재 스냅샷 합계 (기간 무관) |
+| `platforms[].followersChange` | 기간 내 `subscribers_gained - subscribers_lost` |
+
+`chart`는 기간 내 모든 날짜를 하루 단위로 채워서 반환한다. 동기화된 데이터가 없는 날도 `0`으로 포함되므로 클라이언트에서 빈 구간을 보정할 필요가 없다.
+
+**200 응답**
+
+```json
+{
+  "range": "7d",
+  "days": 7,
+  "hasData": true,
+  "connectedCount": 1,
+  "totals": {
+    "followers": 175,
+    "views": 1284,
+    "engagementRate": 6.4,
+    "growthPercent": 12.3
+  },
+  "platforms": [
+    {
+      "platform": "youtube",
+      "connected": true,
+      "channelCount": 1,
+      "handle": "@타루-니케조아",
+      "displayName": "TARU",
+      "avatarUrl": "https://...",
+      "followers": 175,
+      "followersChange": 3,
+      "views": 1284,
+      "viewsChangePercent": 12.3,
+      "engagementRate": 6.4,
+      "postsCount": 16,
+      "lastSyncedAt": "2026-08-30T09:12:00.000Z"
+    },
+    { "platform": "instagram", "connected": false, "channelCount": 0, "followers": 0, "views": 0, "viewsChangePercent": null, "engagementRate": 0, "postsCount": 0, "handle": null, "displayName": null, "avatarUrl": null, "followersChange": 0, "lastSyncedAt": null }
+  ],
+  "chart": [
+    { "date": "8/24", "isoDate": "2026-08-24", "total": 152, "youtube": 152, "instagram": 0, "threads": 0, "x": 0 }
+  ],
+  "recentPosts": [
+    {
+      "id": "9f0c...",
+      "platform": "youtube",
+      "title": "영상 제목",
+      "publishedAt": "2026-08-28T11:00:00.000Z",
+      "permalink": "https://www.youtube.com/watch?v=...",
+      "thumbnailUrl": "https://...",
+      "views": 420,
+      "likes": 31,
+      "comments": 7,
+      "shares": 0
+    }
+  ]
+}
+```
+
+`shares`는 콘텐츠 단위로는 YouTube API에서 제공되지 않아 항상 `0`이다. 채널 단위 공유 수는 Analytics API에서 받아 `engagementRate` 계산에는 반영된다.
+
+새 플랫폼을 추가할 때는 `social_channels`에 채널 행을 만들고 `src/server/metrics.ts`의 `loadDailyMetrics()`에 해당 플랫폼의 일별 지표 소스를 더하면 이 엔드포인트가 자동으로 집계한다.

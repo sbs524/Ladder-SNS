@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 CLAUDE.md
+# 로컬 에이전트 도구 산출물
+.omc/

@@ -900,7 +900,7 @@ async function syncCommentPage(db: ReturnType<typeof getAdminClient>, channel: S
   const topLevelPayload = topLevelComments.map((comment) => ({ ...commentPayload(comment, channel, contentIds), reply_count: threads.find((thread) => thread.snippet?.topLevelComment?.id === comment.id)?.snippet?.totalReplyCount ?? null }));
   const { data: savedTopLevel, error: topLevelError } = await db.from("social_comments").upsert(topLevelPayload, { onConflict: "platform,external_comment_id" }).select("social_comment_id, external_comment_id");
   if (topLevelError) throw topLevelError;
-  const parentIds = new Map([...(savedTopLevel || []).map((comment) => [comment.external_comment_id as string, comment.social_comment_id as string]), ...existingByExternalId]);
+  const parentIds = new Map([...(savedTopLevel || []).map((comment) => [comment.external_comment_id as string, comment.social_comment_id as string] as const), ...existingByExternalId]);
   const replies = threads.flatMap((thread) => (thread.replies?.comments || []).map((comment) => ({ comment, parentExternalId: thread.snippet?.topLevelComment?.id || null }))).filter((value) => value.parentExternalId);
   if (replies.length > 0) {
     const replyPayload = replies.map(({ comment, parentExternalId }) => commentPayload(comment, channel, contentIds, parentIds.get(parentExternalId || "") || null));

@@ -5,6 +5,7 @@ import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { registerAuthRoutes } from "./src/server/auth";
 import { registerYoutubeRoutes, startYoutubeSyncWorker } from "./src/server/youtube";
+import { registerMetricsRoutes } from "./src/server/metrics";
 
 dotenv.config({ path: ".env.local" });
 dotenv.config();
@@ -44,6 +45,7 @@ async function startServer() {
 
   registerAuthRoutes(app);
   registerYoutubeRoutes(app);
+  registerMetricsRoutes(app);
   startYoutubeSyncWorker();
 
   // 1. AI Comprehensive Channel Analysis Endpoint
