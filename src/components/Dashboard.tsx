@@ -132,6 +132,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const chartData = useMemo(() => overview?.chart ?? [], [overview]);
 
+  // Labels follow the selected toggle even before the response lands, so "30D" never sits next
+  // to a "최근 7일" label.
+  const rangeDays = overview?.days ?? (timeRange === '30d' ? 30 : 7);
+
   const allRecentPosts = useMemo(() => {
     const synced = (overview?.recentPosts ?? []).filter((post) => activePlatforms.includes(post.platform));
     // Posts published from the composer this session are not persisted yet, so they are merged
@@ -251,7 +255,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         >
           <div>
             <p className="text-[11px] font-semibold text-slate-500 flex items-center gap-1">
-              <span>최근 {overview?.days ?? 7}일 조회수</span>
+              <span>최근 {rangeDays}일 조회수</span>
               <Sparkles className="w-2.5 h-2.5 text-sky-400 opacity-0 group-hover:opacity-100 transition-opacity" />
             </p>
             <h3 className="text-xl font-extrabold text-slate-900 tracking-tight mt-0.5">
@@ -288,7 +292,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           className="glass-card rounded-2xl p-3.5 flex items-center justify-between cursor-pointer hover:bg-white/70 transition-all group"
         >
           <div>
-            <p className="text-[11px] font-semibold text-slate-500">직전 {overview?.days ?? 7}일 대비</p>
+            <p className="text-[11px] font-semibold text-slate-500">직전 {rangeDays}일 대비</p>
             {aggregateMetrics.growthPercent === null ? (
               <h3 className="text-xl font-extrabold text-slate-400 tracking-tight mt-0.5">–</h3>
             ) : (
@@ -384,7 +388,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <p className="text-xs font-bold text-slate-800">{stats!.followers.toLocaleString()}</p>
                   </div>
                   <div>
-                    <span className="text-[10px] text-slate-500">최근 {overview?.days ?? 7}일 조회</span>
+                    <span className="text-[10px] text-slate-500">최근 {rangeDays}일 조회</span>
                     <p className="text-xs font-bold text-slate-800">{compactNumber(stats!.views)}</p>
                   </div>
                 </div>
@@ -416,7 +420,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
                 <span>플랫폼별 도달·조회 트렌드</span>
               </h4>
-              <p className="text-[10px] text-slate-500 mt-0.5">최근 {overview?.days ?? 7}일간의 채널별 조회수 추이</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">최근 {rangeDays}일간의 채널별 조회수 추이</p>
             </div>
             
             <div className="flex items-center gap-1.5">
