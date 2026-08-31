@@ -27,17 +27,21 @@ import {
   AtSign,
   Twitter,
   ArrowUpRight,
+  Coins,
   Bot
 } from 'lucide-react';
 import { PlatformType, UserProfile, AIAnalysisReport } from '../types';
-import { PLATFORM_CONFIGS, DEFAULT_AI_REPORT } from '../data/mockData';
+import { PLATFORM_CONFIGS } from '../data/platformConfig';
 import { fetchInsights, type ChannelInsights, type InsightsResponse } from '../lib/insightsApi';
-import { PlusLock, LockedValue } from './PlusLock';
+import { askAdvisor, requestAiReport } from '../lib/aiApi';
+import { PlusLock, LockedValue, UpgradeCallout } from './PlusLock';
 
 interface AIAnalysisModalProps {
   isOpen: boolean;
-  /** Phase 4에서 결제 플로우가 생기면 연결한다. 없으면 잠금 오버레이가 가격만 안내한다. */
+  /** 결제 플로우가 생기면 연결한다. 없으면 잠금 오버레이가 가격만 안내한다. */
   onUpgrade?: () => void;
+  /** 크레딧 충전 진입점. 없으면 '준비 중'으로 표시된다. */
+  onBuyCredits?: () => void;
   onClose: () => void;
   user: UserProfile;
   initialPlatform?: PlatformType | 'all';
@@ -48,6 +52,7 @@ type TabType = 'metrics' | 'advice' | 'advisor';
 export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
   isOpen,
   onUpgrade,
+  onBuyCredits,
   onClose,
   user,
   initialPlatform = 'all',
@@ -60,16 +65,17 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
   const [activeTab, setActiveTab] = useState<TabType>('metrics');
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformType | 'all'>(initialPlatform);
   
-  // AI Report State
-  const [report, setReport] = useState<AIAnalysisReport>(DEFAULT_AI_REPORT);
+  // AI Report State — 목업 기본값을 두지 않는다. 리포트는 AI가 만들기 전까지 존재하지 않는다.
+  const [report, setReport] = useState<AIAnalysisReport | null>(null);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState<boolean>(false);
-  const [isLiveAiMode, setIsLiveAiMode] = useState<boolean>(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [reportModel, setReportModel] = useState<string | null>(null);
   const [insights, setInsights] = useState<InsightsResponse | null>(null);
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
   const [insightsError, setInsightsError] = useState<string | null>(null);
 
   // AI Advisor Chat State
-  const [chatMessages, setChatMessages] = useState<Array<{ id: string; sender: 'user' | 'ai'; text: string; time: string }>>([
+  const [chatMessages, setChatMessages] = useState<Array<{ id: string; sender: 'user' | 'ai' | 'error'; text: string; time: string }>>([
     {
       id: 'welcome',
       sender: 'ai',
@@ -106,33 +112,21 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
   const isPlus = insights?.plan === 'plus';
   const youtubeInsights: ChannelInsights[] = insights?.channels ?? [];
 
-  // Request fresh AI Analysis from backend
+  // Request fresh AI Analysis from backend.
+  // 분석 대상 수치는 보내지 않는다 — 서버가 이 사용자의 DB에서 직접 만든다.
   const handleFetchAiAnalysis = async () => {
+    if (isLoadingAnalysis) return;
     setIsLoadingAnalysis(true);
+    setAnalysisError(null);
     try {
-      const response = await fetch('/api/gemini/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userProfile: user,
-          platformStats: {
-            totalFollowers: 322400,
-            totalViews: 4190600,
-            avgEngagement: 7.7,
-          },
-        }),
+      const response = await requestAiReport();
+      setReportModel(response.model);
+      setReport({
+        ...response.report,
+        generatedAt: new Date(response.generatedAt).toLocaleString('ko-KR'),
       });
-
-      const resData = await response.json();
-      if (resData.success && resData.data && resData.data.overallScore) {
-        setReport({
-          ...resData.data,
-          generatedAt: '방금 전 실시간 Gemini AI 분석 갱신됨',
-        });
-        setIsLiveAiMode(true);
-      }
-    } catch (err) {
-      console.warn('Live AI endpoint unreachable, loaded default optimized report', err);
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? error.message : 'AI 분석에 실패했습니다.');
     } finally {
       setIsLoadingAnalysis(false);
     }
@@ -155,46 +149,29 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
     setIsSendingQuery(true);
 
     try {
-      const response = await fetch('/api/gemini/advisor', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: textToSend,
-          context: {
-            userType: user.userType,
-            platforms: user.selectedPlatforms,
-            avgEngagement: '7.7%',
-            topPlatform: 'threads (9.8%)',
-          },
-          history: chatMessages.map((m) => ({ role: m.sender === 'user' ? 'user' : 'model', text: m.text })),
-        }),
-      });
-
-      const resData = await response.json();
-      const aiReply = resData.reply || 'AI 응답을 생성하지 못했습니다.';
+      // 채널 현황은 보내지 않는다. 서버가 DB에서 만들어 프롬프트에 넣는다.
+      const response = await askAdvisor(
+        textToSend,
+        chatMessages
+          .filter((m) => m.id !== 'welcome')
+          .map((m) => ({ role: m.sender === 'user' ? ('user' as const) : ('model' as const), text: m.text })),
+      );
 
       setChatMessages((prev) => [
         ...prev,
+        { id: `ai-${Date.now()}`, sender: 'ai', text: response.reply, time: '방금 전' },
+      ]);
+    } catch (error) {
+      // AI가 답하지 못하면 그렇게 말한다. 미리 써둔 조언을 AI 답변인 척 보여주지 않는다.
+      setChatMessages((prev) => [
+        ...prev,
         {
-          id: `ai-${Date.now()}`,
-          sender: 'ai',
-          text: aiReply,
+          id: `err-${Date.now()}`,
+          sender: 'error',
+          text: error instanceof Error ? error.message : '답변을 가져오지 못했습니다. 잠시 후 다시 시도해주세요.',
           time: '방금 전',
         },
       ]);
-    } catch (error) {
-      // Fallback response if offline
-      setTimeout(() => {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: `ai-${Date.now()}`,
-            sender: 'ai',
-            text: `[실전 성장 팁] "${textToSend}"에 대한 제안:\n1. **쇼츠/릴스 도입 3초 훅**: 도입부에서 의문형 질문보다 '최종 결과/파격적 수치'를 먼저 보여주면 시청지속률이 28% 상승합니다.\n2. **쓰레드 15분 티키타카**: 발행 후 15분 내 달리는 모든 댓글에 맞댓글을 달아 알고리즘 가중치를 획득하세요.\n3. **X(트위터) 링크 분리**: 본문에는 텍스트와 이미지만 넣고, 외부 링크는 첫 번째 답글에 배치해 도달 페널티를 방지하세요.`,
-            time: '방금 전',
-          },
-        ]);
-      }, 500);
     } finally {
       setIsSendingQuery(false);
     }
@@ -239,9 +216,11 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
                 <h3 className="text-base font-extrabold text-slate-900 tracking-tight">
                   AI 정밀 지표 분석 & 성장 처방전
                 </h3>
-                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200">
-                  {report.scoreLabel} ({report.overallScore}점)
-                </span>
+                {report && (
+                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200">
+                    {report.scoreLabel} ({report.overallScore}점)
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
                 {userPlatforms.map((p) => PLATFORM_CONFIGS[p].koreanName).join(' · ')}의 참여율 심층 지표 및 알고리즘 맞춤 전략
@@ -250,16 +229,19 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              id="ai-refresh-btn"
-              onClick={handleFetchAiAnalysis}
-              disabled={isLoadingAnalysis}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl bg-white/70 hover:bg-white text-slate-700 border border-white/80 shadow-2xs transition-all disabled:opacity-50"
-              title="실시간 AI 분석 갱신"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 text-indigo-600 ${isLoadingAnalysis ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">실시간 AI 재분석</span>
-            </button>
+            {/* Free 플랜에서는 호출해봐야 403이므로 버튼 자체를 내보내지 않는다. */}
+            {isPlus && (
+              <button
+                id="ai-refresh-btn"
+                onClick={handleFetchAiAnalysis}
+                disabled={isLoadingAnalysis}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl bg-white/70 hover:bg-white text-slate-700 border border-white/80 shadow-2xs transition-all disabled:opacity-50"
+                title="실시간 AI 분석 갱신"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-indigo-600 ${isLoadingAnalysis ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">{report ? '실시간 AI 재분석' : 'AI 분석 실행'}</span>
+              </button>
+            )}
 
             <button
               id="ai-modal-close-btn"
@@ -382,6 +364,15 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
                   <p className="text-xs font-bold text-slate-700">연동된 채널이 없습니다</p>
                   <p className="text-[11px] text-slate-500">채널을 연동하면 실제 지표로 심층 분석을 볼 수 있습니다.</p>
                 </div>
+              )}
+
+              {!isPlus && youtubeInsights.length > 0 && (
+                <UpgradeCallout
+                  title="심층 지표는 Plus 전용입니다"
+                  description="시청 지속률·CTR·바이럴 점수·시간대·포맷별 효율을 실제 채널 데이터로 봅니다. 아래 잠긴 항목이 모두 열립니다."
+                  onUpgrade={onUpgrade}
+                  onBuyCredits={onBuyCredits}
+                />
               )}
 
               {youtubeInsights.map((channel) => {
@@ -586,7 +577,7 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
                       <PlusLock
                         title="심층 성과 지표는 Plus 전용"
                         description="시청 지속률·저장률·CTR·주력 연령대를 실제 채널 데이터로 확인할 수 있습니다."
-                        onUpgrade={onUpgrade}
+                        showCta={false}
                       >
                         {deepPanel}
                       </PlusLock>
@@ -594,12 +585,12 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {isPlus ? viralityPanel : (
-                        <PlusLock title="바이럴 점수는 Plus 전용" onUpgrade={onUpgrade} compact>
+                        <PlusLock title="바이럴 점수는 Plus 전용" compact showCta={false}>
                           {viralityPanel}
                         </PlusLock>
                       )}
                       {isPlus ? peakPanel : (
-                        <PlusLock title="시간대 분석은 Plus 전용" onUpgrade={onUpgrade} compact>
+                        <PlusLock title="시간대 분석은 Plus 전용" compact showCta={false}>
                           {peakPanel}
                         </PlusLock>
                       )}
@@ -609,7 +600,7 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
                       <PlusLock
                         title="포맷별 효율은 Plus 전용"
                         description="쇼츠·미들폼·롱폼·라이브 중 어떤 포맷이 이 채널에서 실제로 잘 되는지 비교합니다."
-                        onUpgrade={onUpgrade}
+                        showCta={false}
                       >
                         {formatPanel}
                       </PlusLock>
@@ -621,15 +612,83 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
           )}
 
           {/* ===================== TAB 2: AI DIAGNOSIS & STRATEGIC ADVICE ===================== */}
-          {activeTab === 'advice' && (
+          {/* AI 종합 진단은 Plus 전용. 서버도 403으로 막으므로 이 잠금은 표시일 뿐이다. */}
+          {activeTab === 'advice' && !isPlus && (
+            <PlusLock
+              title="AI 종합 진단은 Plus 전용"
+              description="연동된 채널의 실제 지표를 AI가 읽고 강점·병목·플랫폼별 처방과 주간 콘텐츠 로드맵을 만들어 드립니다."
+              onUpgrade={onUpgrade}
+            >
+              <div className="space-y-4">
+                <div className="glass-card rounded-2xl p-4 space-y-2">
+                  <div className="h-3 w-32 rounded bg-slate-200/80" />
+                  <div className="h-2.5 w-full rounded bg-slate-200/60" />
+                  <div className="h-2.5 w-4/5 rounded bg-slate-200/60" />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {[0, 1].map((i) => (
+                    <div key={i} className="glass-card rounded-2xl p-4 space-y-2">
+                      <div className="h-3 w-28 rounded bg-slate-200/80" />
+                      {[0, 1, 2].map((j) => (
+                        <div key={j} className="h-2.5 w-full rounded bg-slate-200/60" />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+                <div className="glass-card rounded-2xl p-4 h-28" />
+              </div>
+            </PlusLock>
+          )}
+
+          {activeTab === 'advice' && isPlus && !report && (
+            <div className="glass-card rounded-2xl p-8 flex flex-col items-center justify-center gap-3 text-center">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white flex items-center justify-center">
+                <Sparkles className={`w-6 h-6 ${isLoadingAnalysis ? 'animate-spin' : ''}`} />
+              </div>
+              <p className="text-xs font-semibold text-slate-700">
+                {isLoadingAnalysis
+                  ? 'AI가 연동된 채널의 실제 지표를 읽고 리포트를 작성 중입니다...'
+                  : '아직 생성된 리포트가 없습니다. 지금 채널 데이터를 기준으로 진단을 만들어 보세요.'}
+              </p>
+              {analysisError && (
+                <div className="flex flex-col items-center gap-2">
+                  <p className="max-w-sm text-xs font-semibold text-rose-600">{analysisError}</p>
+                  {onBuyCredits && analysisError.includes('크레딧') && (
+                    <button
+                      onClick={onBuyCredits}
+                      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-extrabold text-slate-700 hover:bg-slate-50"
+                    >
+                      <Coins className="h-3 w-3 text-amber-500" />크레딧 충전
+                    </button>
+                  )}
+                </div>
+              )}
+              <button
+                onClick={handleFetchAiAnalysis}
+                disabled={isLoadingAnalysis}
+                className="inline-flex items-center gap-1.5 text-xs font-bold px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 transition-all disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingAnalysis ? 'animate-spin' : ''}`} />
+                <span>{isLoadingAnalysis ? '분석 중' : 'AI 종합 진단 생성'}</span>
+              </button>
+            </div>
+          )}
+
+          {activeTab === 'advice' && isPlus && report && (
             <div className="space-y-4">
-              
+
+              {analysisError && (
+                <div className="glass-card rounded-2xl p-3 border-l-4 border-l-rose-500">
+                  <p className="text-xs font-semibold text-rose-600">{analysisError}</p>
+                </div>
+              )}
+
               {/* AI Summary Banner */}
               <div className="glass-card rounded-2xl p-4 bg-gradient-to-r from-indigo-50/80 via-white/70 to-purple-50/80 border border-indigo-100/60 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-indigo-600 flex items-center gap-1">
                     <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                    <span>Gemini 3.7 AI 채널 종합 진단</span>
+                    <span>AI 채널 종합 진단{reportModel ? ` · ${reportModel}` : ''}</span>
                   </span>
                   <span className="text-[10px] text-slate-400">{report.generatedAt}</span>
                 </div>
@@ -787,39 +846,62 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
           )}
 
           {/* ===================== TAB 3: AI ADVISOR 1:1 CHAT ===================== */}
-          {activeTab === 'advisor' && (
+          {/* 1:1 컨설턴트도 Plus 전용. 서버가 403으로 막고, 여기서는 그 상태를 보여준다. */}
+          {activeTab === 'advisor' && !isPlus && (
+            <PlusLock
+              title="AI 1:1 컨설턴트는 Plus 전용"
+              description="내 채널의 실제 지표를 읽은 AI에게 성장 전략을 직접 물어볼 수 있습니다."
+              onUpgrade={onUpgrade}
+            >
+              <div className="flex flex-col h-[420px] max-h-[45vh] gap-3">
+                <div className="flex-1 glass-card rounded-2xl border border-white/60 p-3 space-y-3">
+                  {[0, 1, 2].map((i) => (
+                    <div key={i} className={`flex ${i % 2 === 1 ? 'justify-end' : 'justify-start'}`}>
+                      <div className="h-12 w-2/3 rounded-2xl bg-slate-200/70" />
+                    </div>
+                  ))}
+                </div>
+                <div className="h-10 rounded-2xl bg-slate-200/60" />
+              </div>
+            </PlusLock>
+          )}
+
+          {activeTab === 'advisor' && isPlus && (
             <div className="flex flex-col h-[520px] max-h-[55vh] space-y-3">
               
               {/* Chat Messages Container */}
               <div className="flex-1 overflow-y-auto space-y-3 p-3 glass-card rounded-2xl border border-white/60">
                 {chatMessages.map((msg) => {
                   const isUser = msg.sender === 'user';
+                  const isError = msg.sender === 'error';
                   return (
                     <div
                       key={msg.id}
                       className={`flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start'}`}
                     >
                       {!isUser && (
-                        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                          <Bot className="w-4 h-4" />
+                        <div
+                          className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${
+                            isError
+                              ? 'bg-rose-100 text-rose-600 border border-rose-200'
+                              : 'bg-gradient-to-tr from-indigo-600 to-purple-600 text-white'
+                          }`}
+                        >
+                          {isError ? <AlertTriangle className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
                         </div>
                       )}
-                      
+
                       <div
                         className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-xs ${
                           isUser
                             ? 'bg-slate-900 text-white shadow-2xs rounded-tr-xs'
-                            : 'glass-card bg-white/90 text-slate-800 shadow-2xs border border-white/80 rounded-tl-xs'
+                            : isError
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200 rounded-tl-xs'
+                              : 'glass-card bg-white/90 text-slate-800 shadow-2xs border border-white/80 rounded-tl-xs'
                         }`}
                       >
                         <p className="whitespace-pre-line leading-relaxed">{msg.text}</p>
-                        <span
-                          className={`text-[9px] block text-right mt-1 ${
-                            isUser ? 'text-slate-400' : 'text-slate-400'
-                          }`}
-                        >
-                          {msg.time}
-                        </span>
+                        <span className="text-[9px] block text-right mt-1 text-slate-400">{msg.time}</span>
                       </div>
                     </div>
                   );
@@ -881,7 +963,7 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
         <div className="px-5 py-3 border-t border-white/60 bg-white/40 backdrop-blur-xl flex items-center justify-between text-xs text-slate-500 shrink-0">
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-indigo-600" />
-            <span>AI 분석 알고리즘 모델 v3.7 • {userPlatforms.length}개 SNS 연동 데이터 기반</span>
+            <span>{userPlatforms.length}개 SNS 연동 데이터 기반{reportModel ? ` • ${reportModel}` : ''}</span>
           </div>
           <button
             onClick={onClose}

@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Express, Request, Response } from "express";
-import { getAppUrl, getAuthenticatedUser } from "./auth";
+import { getAppUrl, getAuthenticatedUser, getPlanForProfile } from "./auth";
+import { CHANNEL_LIMITS } from "./usage";
 import { ApiError, getAdminClient, requireString, toErrorResponse } from "./supabaseAdmin";
 
 type SocialPlatform = "youtube" | "instagram" | "threads" | "x";
@@ -485,6 +486,17 @@ async function fetchOwnedGoogleChannels(accessToken: string) {
 async function persistDiscoveredChannels(db: ReturnType<typeof getAdminClient>, profileId: string, grantId: string, channels: GoogleChannel[]) {
   const externalIds = channels.map((channel) => channel.id).filter(Boolean);
   if (externalIds.length === 0) return [] as SocialChannel[];
+
+  // 요금제별 연동 채널 상한. 이미 연결된 채널을 다시 연결(재동의)하는 건 새 채널이 아니므로
+  // 세지 않는다 — 스코프 추가를 위한 재연결이 한도에 걸려서는 안 된다.
+  const plan = await getPlanForProfile(profileId);
+  const channelLimit = CHANNEL_LIMITS[plan];
+  const { count: ownedCount, error: ownedError } = await db
+    .from("social_channels")
+    .select("social_channel_id", { count: "exact", head: true })
+    .eq("profile_id", profileId);
+  if (ownedError) throw ownedError;
+  let owned = ownedCount ?? 0;
   const { data: existingRows, error: existingError } = await db.from("social_channels").select("social_channel_id, profile_id, platform_oauth_grant_id, platform, external_channel_id, handle, display_name, avatar_url, is_dashboard_enabled, status").eq("platform", "youtube").in("external_channel_id", externalIds);
   if (existingError) throw existingError;
   const existingByExternalId = new Map((existingRows || []).map((row) => [row.external_channel_id as string, row as SocialChannel]));
@@ -495,6 +507,14 @@ async function persistDiscoveredChannels(db: ReturnType<typeof getAdminClient>, 
     const existing = existingByExternalId.get(channel.id);
     if (existing && existing.profile_id !== profileId) {
       throw new ApiError(409, "YOUTUBE_CHANNEL_ALREADY_CONNECTED", "One of these YouTube channels is already connected to another Ladder SNS account.");
+    }
+    if (!existing && owned >= channelLimit) {
+      throw new ApiError(
+        403,
+        "CHANNEL_LIMIT_REACHED",
+        `${plan === "plus" ? "Plus" : "Free"} 요금제는 채널을 ${channelLimit}개까지 연동할 수 있습니다.` +
+          (plan === "free" ? " Plus로 업그레이드하면 5개까지 연동할 수 있습니다." : ""),
+      );
     }
     const snippet = channel.snippet || {};
     const avatarUrl = snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || null;
@@ -514,6 +534,7 @@ async function persistDiscoveredChannels(db: ReturnType<typeof getAdminClient>, 
       : await db.from("social_channels").insert(payload).select("social_channel_id, profile_id, platform_oauth_grant_id, platform, external_channel_id, handle, display_name, avatar_url, is_dashboard_enabled, status").single();
     if (result.error || !result.data) throw result.error || new Error("Unable to save YouTube channel.");
     const savedChannel = result.data as SocialChannel;
+    if (!existing) owned += 1;
     saved.push(savedChannel);
     const profilePayload = {
       social_channel_id: savedChannel.social_channel_id,

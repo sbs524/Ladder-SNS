@@ -13,7 +13,6 @@ export interface PlatformConfig {
   textColor: string;
   icon: string;
   description: string;
-  defaultHandle: string;
 }
 
 export interface UserProfile {
@@ -21,10 +20,15 @@ export interface UserProfile {
   email: string;
   userType: UserType;
   selectedPlatforms: PlatformType[];
-  platformHandles: Record<PlatformType, string>;
+  /** 서버가 정하는 값. 클라이언트는 표시에만 쓴다. */
+  plan: BillingPlan;
+  /** 구매 크레딧 잔액. 월 할당량과는 별개다. */
+  aiCredits: number;
   isLoggedIn: boolean;
   avatarUrl?: string;
 }
+
+export type BillingPlan = 'free' | 'plus';
 
 export interface MetricItem {
   label: string;
@@ -83,16 +87,6 @@ export interface ActivityNotification {
   content: string;
   timeAgo: string;
   targetPost?: string;
-}
-
-export interface ScheduledPost {
-  id: string;
-  content: string;
-  mediaUrl?: string;
-  platforms: PlatformType[];
-  scheduledDate: string;
-  status: 'scheduled' | 'published';
-  tags: string[];
 }
 
 export interface EngagementDeepMetric {

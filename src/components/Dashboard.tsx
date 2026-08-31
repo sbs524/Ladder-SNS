@@ -7,21 +7,15 @@ import {
   Share2, 
   MessageSquare, 
   ArrowUpRight, 
-  ArrowDownRight,
-  Filter, 
-  Calendar,
+  ArrowDownRight, 
   Sparkles,
   ExternalLink,
-  CheckCircle2,
-  AlertCircle,
-  Plus,
   BarChart3,
   Youtube,
   Instagram,
   AtSign,
   Twitter,
   RefreshCw,
-  SlidersHorizontal,
   ChevronRight,
   Link2,
   LoaderCircle
@@ -35,8 +29,8 @@ import {
   Tooltip, 
   CartesianGrid
 } from 'recharts';
-import { PlatformType, UserProfile, ScheduledPost } from '../types';
-import { PLATFORM_CONFIGS } from '../data/mockData';
+import { PlatformType, UserProfile } from '../types';
+import { PLATFORM_CONFIGS } from '../data/platformConfig';
 import { fetchMetricsOverview, type MetricsOverview, type OverviewPost, type PlatformSummary } from '../lib/metricsApi';
 
 import { PlatformConnectionsSection } from './PlatformConnectionsSection';
@@ -59,11 +53,12 @@ function compactNumber(value: number) {
 
 interface DashboardProps {
   user: UserProfile;
-  onOpenComposer: () => void;
+  onOpenComposer?: () => void;
   onOpenOnboarding: () => void;
   onOpenAnalysis: (platform?: PlatformType | 'all') => void;
   onOpenRawData?: () => void;
-  publishedPosts?: ScheduledPost[];
+  /** 값이 바뀌면 지표를 다시 읽는다. 영상 문구를 저장한 직후 갱신용. */
+  dataVersion?: number;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -72,7 +67,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onOpenOnboarding,
   onOpenAnalysis,
   onOpenRawData,
-  publishedPosts = [],
+  dataVersion = 0,
 }) => {
   const [activePlatformFilter, setActivePlatformFilter] = useState<PlatformType | 'all'>('all');
   const [timeRange, setTimeRange] = useState<'7d' | '30d'>('7d');
@@ -102,7 +97,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
     const controller = new AbortController();
     loadOverview(timeRange, controller.signal);
     return () => controller.abort();
-  }, [loadOverview, timeRange]);
+  }, [loadOverview, timeRange, dataVersion]);
 
   // Onboarding decides which platform cards render; the overview decides which of them have a
   // connected channel behind them. Unconnected ones show a connect prompt, never a number.
@@ -136,28 +131,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
   // to a "최근 7일" label.
   const rangeDays = overview?.days ?? (timeRange === '30d' ? 30 : 7);
 
-  const allRecentPosts = useMemo(() => {
-    const synced = (overview?.recentPosts ?? []).filter((post) => activePlatforms.includes(post.platform));
-    // Posts published from the composer this session are not persisted yet, so they are merged
-    // in on the client and disappear on refresh.
-    const justPublished: OverviewPost[] = publishedPosts.flatMap((post) =>
-      post.platforms
-        .filter((p) => activePlatforms.includes(p))
-        .map((p) => ({
-          id: `${post.id}-${p}`,
-          platform: p,
-          title: post.content,
-          publishedAt: post.scheduledDate,
-          permalink: null,
-          thumbnailUrl: null,
-          views: 0,
-          likes: 0,
-          comments: 0,
-          shares: 0,
-        })),
-    );
-    return [...justPublished, ...synced];
-  }, [activePlatforms, overview, publishedPosts]);
+  const allRecentPosts = useMemo(
+    () => (overview?.recentPosts ?? []).filter((post) => activePlatforms.includes(post.platform)),
+    [activePlatforms, overview],
+  );
 
   const filteredPosts = useMemo(() => {
     if (activePlatformFilter === 'all') return allRecentPosts;
@@ -392,17 +369,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <p className="text-xs font-bold text-slate-800">{compactNumber(stats!.views)}</p>
                   </div>
                 </div>
-              ) : (
+              ) : p === 'youtube' ? (
+                // 유튜브만 실제 연결 경로가 있다. 로그인 전에는 OAuth를 시작할 수 없으므로 로그인으로 보낸다.
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onOpenOnboarding();
+                    if (user.isLoggedIn) window.location.assign('/api/connections/youtube/start');
+                    else onOpenOnboarding();
                   }}
                   className="w-full mt-1 pt-1.5 border-t border-slate-200/40 text-[10px] font-semibold text-indigo-600 hover:text-indigo-800 flex items-center justify-center gap-1"
                 >
                   <Link2 className="w-3 h-3" />
-                  <span>연동하기</span>
+                  <span>{user.isLoggedIn ? '연동하기' : '로그인하고 연동하기'}</span>
                 </button>
+              ) : (
+                // 인스타그램·쓰레드·X는 아직 연동 수단이 없다. 누르면 아무 일도 없는
+                // "연동하기" 버튼 대신 상태를 그대로 적는다.
+                <p className="w-full mt-1 pt-1.5 border-t border-slate-200/40 text-[10px] font-semibold text-slate-400 text-center">
+                  연동 지원 예정
+                </p>
               )}
             </div>
           );
@@ -541,13 +526,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <Sparkles className="w-3 h-3 text-indigo-500" />
               <span>참여율 = (좋아요+댓글+공유) / 조회수</span>
             </span>
-            <button
-              onClick={onOpenComposer}
-              className="text-indigo-600 hover:text-indigo-800 font-semibold text-[11px] flex items-center gap-0.5"
-            >
-              <span>원클릭 동시 발행</span>
-              <ChevronRight className="w-3 h-3" />
-            </button>
+            {onOpenComposer && (
+              <button
+                onClick={onOpenComposer}
+                className="text-indigo-600 hover:text-indigo-800 font-semibold text-[11px] flex items-center gap-0.5"
+              >
+                <span>영상 문구 다듬기</span>
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -558,20 +545,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <Share2 className="w-3.5 h-3.5 text-indigo-600" />
               <span>최근 발행 콘텐츠</span>
             </h4>
-            <button
-              onClick={onOpenComposer}
-              className="text-[11px] font-semibold px-2 py-0.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800 transition-all flex items-center gap-1"
-            >
-              <Plus className="w-3 h-3" />
-              <span>발행</span>
-            </button>
+            {onOpenComposer && (
+              <button
+                onClick={onOpenComposer}
+                className="text-[11px] font-semibold px-2 py-0.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800 transition-all flex items-center gap-1"
+              >
+                <Sparkles className="w-3 h-3 text-indigo-300" />
+                <span>문구 편집</span>
+              </button>
+            )}
           </div>
 
           {/* Posts compact list */}
           <div className="space-y-2 overflow-y-auto max-h-[200px] pr-1">
             {filteredPosts.length === 0 && (
               <p className="text-[11px] text-slate-400 py-6 text-center">
-                {connectedPlatforms.length === 0 ? '채널을 연동하면 발행한 콘텐츠가 표시됩니다.' : '아직 수집된 콘텐츠가 없습니다.'}
+                {connectedPlatforms.length === 0 ? '채널을 연동하면 발행한 콘텐츠가 표시됩니다.' : '아직 동기화된 콘텐츠가 없습니다.'}
               </p>
             )}
             {filteredPosts.slice(0, 3).map((post) => {

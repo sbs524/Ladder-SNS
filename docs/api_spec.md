@@ -5,8 +5,8 @@
 | 도메인 | 구현 API | 인증 |
 |---|---|---|
 | Health | `GET /api/health` | 불필요 |
-| Authentication | OTP 요청·검증, Google OAuth, 세션·프로필 관리, 아바타 업로드, 회원탈퇴 | API별 상이 |
-| Gemini | `POST /api/gemini/analyze`, `POST /api/gemini/advisor` | 현재 미적용 |
+| Authentication | OTP 요청·검증, Google OAuth, 세션·프로필 관리(표시 이름·유형·운영 플랫폼), 아바타 업로드, 회원탈퇴 | API별 상이 |
+| Gemini | `POST /api/gemini/analyze`, `POST /api/gemini/advisor`, `POST /api/gemini/draft` | 세션 + **Plus 플랜** 필요 |
 | YouTube 연결·동기화 | OAuth 연결, 채널 조회·해제, 동기화 작업 생성, 원본 데이터 조회, 영상 수정·삭제, 댓글 답글·모더레이션 | 필요 |
 | Metrics | 대시보드 통합 지표 조회, AI 분석용 심층 지표 조회 | 필요 |
 | Social comments | 댓글·이벤트 조회, SSE 스트림 | 필요 |
@@ -225,13 +225,86 @@ Refresh token 쿠키로 세션을 갱신하고 새 HttpOnly 쿠키를 설정한�
 
 ## Gemini
 
+두 엔드포인트 모두 **세션 쿠키와 `plan = 'plus'`** 가 필요하다. insights처럼 필드를 잘라 내려보내는 게 아니라 기능 전체가 잠긴다 — 반쪽짜리 진단은 의미가 없고, AI 호출은 그 자체가 비용이라 Free 플랜에서 태우지 않는다.
+
+분석 대상 수치는 **요청 본문으로 받지 않는다.** 서버가 `social_channels` / `youtube_channel_daily_metrics` / `social_contents`에서 직접 스냅샷을 만들어 프롬프트에 넣으며, 이때 쓰는 공식은 `GET /api/metrics/overview`와 같다(`engagementRate`, `percentChange`). 따라서 AI가 인용하는 숫자와 대시보드 숫자는 어긋나지 않는다.
+
+모델은 `GEMINI_MODEL` 환경변수로 지정하며 기본값은 `gemini-3.7-flash`다 — 과금_및_지표_정의.md §7.
+
+`GEMINI_API_KEY`가 없으면 `503 SERVICE_NOT_CONFIGURED`로 실패한다. 미리 작성해둔 예시 답변을 성공 응답으로 돌려주지 않는다.
+
+세 엔드포인트 모두 **월 할당량 → 구매 크레딧 → 402** 순서로 확인한다. 둘 다 없으면 AI에 요청하지 않고 `402 INSUFFICIENT_CREDITS`로 끊는다. 성공한 호출만 `ai_usage_events`에 기록하며, 기간은 **KST 달력 기준 이번 달**이다.
+
+할당량을 먼저 쓰는 이유는 할당량이 이월되지 않고 크레딧은 이월되기 때문이다 — 사용자에게 유리한 순서다.
+
+| 액션 | Free | Plus 월 할당량 | 할당량 소진 후 1회당 |
+|---|---|---|---|
+| `analyze` (종합 진단) | 0 | 3 | 5크레딧 |
+| `advisor` (컨설턴트 질문) | 0 | 30 | 1크레딧 |
+| `draft` (영상 문구 초안) | 0 | 30 | 1크레딧 |
+
+크레딧 차감은 성공 후에만 일어나며, `spend_ai_credits` 함수의 조건부 update 한 방이라 동시 요청에도 잔액이 음수가 되지 않는다. 잔액 증가(충전)는 결제 도메인의 몫으로, `profiles.ai_credits`를 서비스 롤로 올리면 된다.
+
+Free가 0인 이유는 세 기능 모두 Plus 전용이기 때문이다(문서 §2의 "Free도 크레딧 구매 가능"은 아직 구현하지 않았다). 별도로 **연동 채널 수**는 Free 2개 / Plus 5개로 제한되며, 초과 시 채널 연결이 `403 CHANNEL_LIMIT_REACHED`로 거부된다(재연결은 새 채널이 아니므로 세지 않는다).
+
+성공 응답에는 `usage: { used, limit, remaining, credits, creditCost }`가 함께 실린다.
+
+**공통 오류**: `401 UNAUTHENTICATED`, `403 PLUS_REQUIRED`, `409 NO_CONNECTED_CHANNEL`, `402 INSUFFICIENT_CREDITS`, `502 AI_INVALID_RESPONSE`, `503 SERVICE_NOT_CONFIGURED`
+
 ### `POST /api/gemini/analyze`
 
-채널 종합 분석을 요청한다. 현재 레거시 프로토타입 API이며 회원가입 인증은 아직 적용되지 않았다.
+연동된 채널의 최근 30일 실적으로 AI 종합 진단 리포트를 생성한다. 요청 본문은 사용하지 않는다.
+
+**200 응답**
+
+```json
+{
+  "model": "gemini-3.7-flash",
+  "generatedAt": "2026-08-31T05:00:00.000Z",
+  "rangeDays": 30,
+  "report": {
+    "overallScore": 72,
+    "scoreLabel": "성장 중인 채널",
+    "summary": "...",
+    "keyStrengths": ["..."],
+    "bottlenecks": ["..."],
+    "channelAdvice": [{ "platform": "youtube", "strategy": "...", "tactics": ["..."], "recommendedPostingTime": "...", "expectedGrowth": "...", "hookTip": "..." }],
+    "contentRoadmap": [{ "day": "월", "platform": "youtube", "topic": "...", "hook": "...", "format": "..." }]
+  }
+}
+```
+
+모델 응답은 서버가 형태를 검증한 뒤에만 내려간다(`validateReport`). 점수가 0~100을 벗어나거나 필수 배열이 비어 있으면 `502 AI_INVALID_RESPONSE`로 끊는다 — 반쯤 채워진 리포트는 목업보다 나쁘다.
 
 ### `POST /api/gemini/advisor`
 
-AI 컨설턴트 질의를 요청한다. 현재 레거시 프로토타입 API이며 회원가입 인증은 아직 적용되지 않았다.
+채널 데이터를 근거로 1:1 질의에 답한다.
+
+**요청 본문**
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `query` | string | 질문. 1~1,000자. 비어 있으면 `400 QUERY_REQUIRED` |
+| `history` | `{ role: 'user' \| 'model', text: string }[]` | 대화 이력. 서버가 최근 10턴까지만 사용한다 |
+
+**200 응답**: `{ "model": "gemini-3.7-flash", "reply": "...", "usage": { ... } }`
+
+답변이 비어 있으면 `502 AI_EMPTY_RESPONSE`.
+
+### `POST /api/gemini/draft`
+
+이미 올라간 YouTube 영상의 제목·설명 초안을 만든다. **저장은 하지 않는다** — 반영은 `PATCH /api/connections/youtube/:channelId/videos/:contentId`가 담당한다.
+
+**요청 본문**
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `socialContentId` | string | 대상 영상. 본인 채널의 영상이 아니면 `404 VIDEO_NOT_FOUND` |
+| `tone` | string | 원하는 방향(예: "더 짧고 담백하게"). 100자까지. 선택 |
+
+**200 응답**: `{ "model": "...", "draft": { "title": "...", "description": "..." }, "usage": { ... } }`
+
+초안은 YouTube `videos.update` 제약(제목 100자, 설명 5,000자)을 서버가 먼저 검증한다. 넘으면 `502 AI_INVALID_RESPONSE`.
 ## YouTube 연결 및 동기화
 
 YouTube 로그인은 기존 Supabase Google 로그인과 별개다. 이 도메인의 OAuth는 채널·콘텐츠·분석·댓글을 읽고 쓰기 위한 Google 권한(`youtube.force-ssl`)을 요청하며, 토큰은 AES-256-GCM으로 암호화한 값만 `platform_oauth_grants`에 저장한다. 클라이언트에는 Supabase service role key나 Google client secret을 전달하지 않는다.

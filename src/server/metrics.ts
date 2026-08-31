@@ -12,7 +12,7 @@ type Platform = (typeof PLATFORMS)[number];
 const RANGE_DAYS = { "7d": 7, "30d": 30 } as const;
 type RangeKey = keyof typeof RANGE_DAYS;
 
-type ChannelRow = {
+export type ChannelRow = {
   social_channel_id: string;
   platform: Platform;
   handle: string | null;
@@ -22,9 +22,9 @@ type ChannelRow = {
   youtube_channel_profiles: ProfileRelation | ProfileRelation[] | null;
 };
 
-type ProfileRelation = { subscriber_count: number | string | null; view_count: number | string | null; video_count: number | string | null };
+export type ProfileRelation = { subscriber_count: number | string | null; view_count: number | string | null; video_count: number | string | null };
 
-type DailyRow = {
+export type DailyRow = {
   social_channel_id: string;
   metric_date: string;
   views: number;
@@ -105,7 +105,7 @@ export function engagementRate(totals: Totals) {
   return Number((((totals.likes + totals.comments + totals.shares) / totals.views) * 100).toFixed(1));
 }
 
-async function loadDailyMetrics(db: ReturnType<typeof getAdminClient>, channels: ChannelRow[], since: string): Promise<DailyRow[]> {
+export async function loadDailyMetrics(db: ReturnType<typeof getAdminClient>, channels: ChannelRow[], since: string): Promise<DailyRow[]> {
   const youtubeChannelIds = channels.filter((channel) => channel.platform === "youtube").map((channel) => channel.social_channel_id);
   if (youtubeChannelIds.length === 0) return [];
   const { data, error } = await db
@@ -234,6 +234,8 @@ export function registerMetricsRoutes(app: Express) {
         const metrics = content.current_metrics || {};
         return {
           id: content.social_content_id,
+          // 영상 문구 편집(PATCH .../videos/:contentId)이 채널 ID를 필요로 한다.
+          socialChannelId: content.social_channel_id,
           platform: content.platform,
           title: content.title || content.body_text || "제목 없음",
           publishedAt: content.source_published_at,

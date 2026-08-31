@@ -1,14 +1,13 @@
 import React from 'react';
-import { Sparkles, LogIn, LogOut, RefreshCw, Plus, Bell } from 'lucide-react';
+import { Sparkles, LogIn, LogOut, RefreshCw, Plus } from 'lucide-react';
 import ladderMark from '../assets/ladder-mark.png';
 import { UserProfile } from '../types';
-import { PLATFORM_CONFIGS } from '../data/mockData';
 
 interface NavbarProps {
   user: UserProfile;
   onOpenAuth: () => void;
   onOpenOnboarding: () => void;
-  onOpenComposer: () => void;
+  onOpenComposer?: () => void;
   onOpenAnalysis?: () => void;
   onOpenMyPage?: () => void;
   onLogout: () => void;
@@ -82,15 +81,15 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           )}
 
-          {/* Quick Write Post */}
-          {!isHeroMode && (
+          {/* 영상 문구 편집 — 로그인 상태에서만 의미가 있다 */}
+          {!isHeroMode && onOpenComposer && (
             <button
               id="nav-composer-quick-btn"
               onClick={onOpenComposer}
               className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-900 text-white transition-all shadow-xs"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>글작성</span>
+              <span>영상 문구</span>
             </button>
           )}
 

@@ -28,6 +28,7 @@ export type OverviewChartPoint = {
 
 export type OverviewPost = {
   id: string;
+  socialChannelId: string;
   platform: PlatformType;
   title: string;
   publishedAt: string | null;

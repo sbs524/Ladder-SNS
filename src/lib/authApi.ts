@@ -4,11 +4,18 @@ export type AuthUser = {
   email_confirmed_at: string | null;
 };
 
+export type BillingPlan = 'free' | 'plus';
+export type SocialPlatform = 'youtube' | 'instagram' | 'threads' | 'x';
+
 export type AuthProfile = {
   profile_id: string;
   display_name: string | null;
   avatar_url: string | null;
   user_type: 'individual' | 'team' | 'enterprise' | null;
+  /** 서버가 늘 내려보내는 값이다. 요금제는 서비스 롤로만 바뀌므로 클라이언트는 읽기만 한다. */
+  plan: BillingPlan;
+  ai_credits: number;
+  selected_platforms: SocialPlatform[];
   onboarding_completed_at: string | null;
   created_at: string;
   updated_at: string;
@@ -61,6 +68,7 @@ export function getCurrentSession() {
 export function updateCurrentProfile(changes: {
   display_name?: string;
   user_type?: 'individual' | 'team' | 'enterprise';
+  selected_platforms?: SocialPlatform[];
   onboarding_completed?: boolean;
 }) {
   return request<{ profile: AuthProfile }>('/api/auth/me/profile', {

@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { AlertCircle, AlertTriangle, ArrowLeft, Camera, CheckCircle2, LoaderCircle } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowLeft, Camera, CheckCircle2, Coins, LoaderCircle, Sparkles } from 'lucide-react';
+import { PLUS_MONTHLY_PRICE } from './PlusLock';
 import { deleteAccount, updateCurrentProfile, uploadAvatar, type AuthProfile } from '../lib/authApi';
 import { UserProfile } from '../types';
 
@@ -12,9 +13,14 @@ interface MyPageProps {
   onBack: () => void;
   onProfileUpdated: (profile: AuthProfile) => void;
   onAccountDeleted: () => void;
+  /** 결제 플로우가 생기면 연결한다. 없으면 가격만 안내하고 버튼을 만들지 않는다. */
+  onUpgrade?: () => void;
+  /** 크레딧 결제 플로우. 없으면 '준비 중'으로 표시한다. */
+  onBuyCredits?: () => void;
 }
 
-export function MyPage({ user, onBack, onProfileUpdated, onAccountDeleted }: MyPageProps) {
+export function MyPage({ user, onBack, onProfileUpdated, onAccountDeleted, onUpgrade, onBuyCredits }: MyPageProps) {
+  const isPlus = user.plan === 'plus';
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
@@ -98,6 +104,72 @@ export function MyPage({ user, onBack, onProfileUpdated, onAccountDeleted }: MyP
         </button>
         <h2 className="text-base font-extrabold text-slate-900">마이페이지</h2>
       </div>
+
+      <section className="glass-panel rounded-2xl border border-white/70 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-extrabold text-slate-900">요금제</h3>
+            <div className="mt-1.5 flex items-center gap-2">
+              <span className={isPlus
+                ? 'rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 px-2.5 py-1 text-xs font-extrabold text-white'
+                : 'rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-extrabold text-slate-600'}>
+                {isPlus ? 'Plus' : 'Free'}
+              </span>
+              <span className="text-[11px] text-slate-500">
+                {isPlus ? `${PLUS_MONTHLY_PRICE} · 연동 채널 5개` : '연동 채널 2개 · AI 기능은 잠김'}
+              </span>
+            </div>
+          </div>
+          {!isPlus && (onUpgrade ? (
+            <button type="button" onClick={onUpgrade} className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-3.5 py-2 text-xs font-extrabold text-white hover:opacity-95">
+              <Sparkles className="h-3.5 w-3.5 text-amber-300" />Plus 시작하기 · {PLUS_MONTHLY_PRICE}
+            </button>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200/70 bg-indigo-50/80 px-3 py-2 text-xs font-extrabold text-indigo-700">
+              <Sparkles className="h-3.5 w-3.5 text-indigo-500" />Plus {PLUS_MONTHLY_PRICE} · 결제 준비 중
+            </span>
+          ))}
+        </div>
+
+        <ul className="mt-3 grid grid-cols-1 gap-1.5 border-t border-slate-200/50 pt-3 text-[11px] text-slate-600 sm:grid-cols-2">
+          <li>· AI 종합 진단 {isPlus ? '월 3회' : 'Plus 전용'}</li>
+          <li>· AI 1:1 컨설턴트 {isPlus ? '월 30회' : 'Plus 전용'}</li>
+          <li>· 영상 문구 AI 초안 {isPlus ? '월 30회' : 'Plus 전용'}</li>
+          <li>· 심층 지표(지속률·바이럴·시간대) {isPlus ? '이용 가능' : 'Plus 전용'}</li>
+        </ul>
+        <p className="mt-2 text-[10px] leading-relaxed text-slate-400">
+          참여율·공유율·댓글 비율은 Free에서도 제공합니다. 월 할당량은 매달 1일(KST)에 초기화되며 이월되지 않습니다.
+        </p>
+      </section>
+
+      {/* 크레딧은 할당량과 별개 잔액이다. 할당량을 다 쓴 뒤에만 차감된다 — 합산해 보여주지 않는다. */}
+      <section className="glass-panel rounded-2xl border border-white/70 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="flex items-center gap-1.5 text-sm font-extrabold text-slate-900">
+              <Coins className="h-4 w-4 text-amber-500" />크레딧
+            </h3>
+            <p className="mt-1.5 text-lg font-extrabold text-slate-900">
+              {user.aiCredits.toLocaleString()}<span className="ml-1 text-xs font-bold text-slate-400">크레딧</span>
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500">월 할당량을 다 쓴 뒤에 차감됩니다. 구매 크레딧은 이월됩니다.</p>
+          </div>
+          {onBuyCredits ? (
+            <button type="button" onClick={onBuyCredits} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-extrabold text-slate-700 shadow-2xs hover:bg-slate-50">
+              <Coins className="h-3.5 w-3.5 text-amber-500" />크레딧 충전
+            </button>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-xs font-extrabold text-slate-400">
+              <Coins className="h-3.5 w-3.5 text-slate-300" />크레딧 충전 준비 중
+            </span>
+          )}
+        </div>
+        <ul className="mt-3 grid grid-cols-1 gap-1.5 border-t border-slate-200/50 pt-3 text-[11px] text-slate-600 sm:grid-cols-3">
+          <li>· AI 종합 진단 <strong className="text-slate-800">5크레딧</strong></li>
+          <li>· 컨설턴트 질문 <strong className="text-slate-800">1크레딧</strong></li>
+          <li>· 영상 문구 초안 <strong className="text-slate-800">1크레딧</strong></li>
+        </ul>
+      </section>
 
       <section className="glass-panel rounded-2xl border border-white/70 p-4 sm:p-5">
         <h3 className="mb-3 text-sm font-extrabold text-slate-900">프로필 이미지</h3>

@@ -13,10 +13,24 @@ type Profile = {
   avatar_url: string | null;
   user_type: UserType | null;
   plan: BillingPlan;
+  ai_credits: number;
+  selected_platforms: SocialPlatform[];
   onboarding_completed_at: string | null;
   created_at: string;
   updated_at: string;
 };
+
+export type SocialPlatform = "youtube" | "instagram" | "threads" | "x";
+const SOCIAL_PLATFORMS: SocialPlatform[] = ["youtube", "instagram", "threads", "x"];
+
+/** undefined = 변경 없음, null = 잘못된 입력. 중복은 제거하고 순서는 정규화한다. */
+function readSelectedPlatforms(value: unknown): SocialPlatform[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const unique = [...new Set(value)];
+  if (unique.some((item) => !SOCIAL_PLATFORMS.includes(item as SocialPlatform))) return null;
+  return SOCIAL_PLATFORMS.filter((platform) => unique.includes(platform));
+}
 
 export type AuthenticatedUser = { user: User; accessToken: string };
 
@@ -194,7 +208,7 @@ export async function getAuthenticatedUser(req: Request): Promise<AuthenticatedU
 async function getProfile(accessToken: string, profileId: string): Promise<Profile | null> {
   const { data, error } = await createSupabaseClient(accessToken)
     .from("profiles")
-    .select("profile_id, display_name, avatar_url, user_type, plan, onboarding_completed_at, created_at, updated_at")
+    .select("profile_id, display_name, avatar_url, user_type, plan, ai_credits, selected_platforms, onboarding_completed_at, created_at, updated_at")
     .eq("profile_id", profileId)
     .maybeSingle();
   if (error) throw error;
@@ -316,11 +330,13 @@ export function registerAuthRoutes(app: Express) {
     const displayName = readDisplayName(req.body?.display_name);
     const userType = req.body?.user_type === undefined ? undefined : readUserType(req.body.user_type);
     const onboardingCompleted = req.body?.onboarding_completed;
+    const selectedPlatforms = readSelectedPlatforms(req.body?.selected_platforms);
     if (
       displayName === null ||
       userType === null ||
+      selectedPlatforms === null ||
       (onboardingCompleted !== undefined && typeof onboardingCompleted !== "boolean") ||
-      (displayName === undefined && userType === undefined && onboardingCompleted === undefined)
+      (displayName === undefined && userType === undefined && onboardingCompleted === undefined && selectedPlatforms === undefined)
     ) {
       return sendError(res, 400, "INVALID_INPUT", "Provide valid profile fields to update.");
     }
@@ -328,15 +344,16 @@ export function registerAuthRoutes(app: Express) {
     try {
       const authenticatedUser = await getAuthenticatedUser(req);
       if (!authenticatedUser) return sendError(res, 401, "UNAUTHENTICATED", "A valid session is required.");
-      const changes: Record<string, string | UserType | null> = {};
+      const changes: Record<string, string | UserType | SocialPlatform[] | null> = {};
       if (displayName !== undefined) changes.display_name = displayName;
       if (userType !== undefined) changes.user_type = userType;
+      if (selectedPlatforms !== undefined) changes.selected_platforms = selectedPlatforms;
       if (onboardingCompleted !== undefined) changes.onboarding_completed_at = onboardingCompleted ? new Date().toISOString() : null;
       const { data, error } = await createSupabaseClient(authenticatedUser.accessToken)
         .from("profiles")
         .update(changes)
         .eq("profile_id", authenticatedUser.user.id)
-        .select("profile_id, display_name, avatar_url, user_type, plan, onboarding_completed_at, created_at, updated_at")
+        .select("profile_id, display_name, avatar_url, user_type, plan, ai_credits, selected_platforms, onboarding_completed_at, created_at, updated_at")
         .single();
       if (error) return sendError(res, errorStatus(error), "PROFILE_UPDATE_FAILED", errorMessage(error));
       return res.status(200).json({ profile: data as Profile });
@@ -376,7 +393,7 @@ export function registerAuthRoutes(app: Express) {
           .from("profiles")
           .update({ avatar_url: avatarUrl })
           .eq("profile_id", authenticatedUser.user.id)
-          .select("profile_id, display_name, avatar_url, user_type, plan, onboarding_completed_at, created_at, updated_at")
+          .select("profile_id, display_name, avatar_url, user_type, plan, ai_credits, selected_platforms, onboarding_completed_at, created_at, updated_at")
           .single();
         if (error) throw error;
         return res.status(200).json({ profile: data as Profile });
