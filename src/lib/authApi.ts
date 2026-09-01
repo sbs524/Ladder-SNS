@@ -28,8 +28,8 @@ export type AuthSessionResponse = {
 
 type ApiErrorPayload = { error?: { message?: string } };
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, {
+function send(path: string, init: RequestInit) {
+  return fetch(path, {
     credentials: 'include',
     ...init,
     headers: {
@@ -37,6 +37,35 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init.headers,
     },
   });
+}
+
+/**
+ * 액세스 토큰 쿠키는 1시간이면 만료된다. refresh 토큰 쿠키는 30일이라 세션 자체는 살아 있으므로,
+ * 401을 만나면 조용히 갱신하고 원래 요청을 한 번만 다시 보낸다. 이게 없으면 사용자는 로그아웃한
+ * 적이 없는데도 한 시간 뒤 새로고침에서 로그인 화면을 만난다.
+ *
+ * 갱신 요청 자신은 재시도하지 않는다 — 무한 루프가 된다.
+ */
+let refreshInFlight: Promise<boolean> | null = null;
+
+export function refreshSession(): Promise<boolean> {
+  // 동시에 401이 여러 개 나도 갱신은 한 번만 한다.
+  refreshInFlight ??= send('/api/auth/session/refresh', { method: 'POST' })
+    .then((response) => response.ok)
+    .catch(() => false)
+    .finally(() => {
+      refreshInFlight = null;
+    });
+  return refreshInFlight;
+}
+
+async function request<T>(path: string, init: RequestInit = {}, allowRetry = true): Promise<T> {
+  let response = await send(path, init);
+
+  if (response.status === 401 && allowRetry && path !== '/api/auth/session/refresh') {
+    if (await refreshSession()) response = await send(path, init);
+  }
+
   const body = response.headers.get('content-type')?.includes('application/json')
     ? ((await response.json()) as T & ApiErrorPayload)
     : null;

@@ -18,7 +18,9 @@ import {
   RefreshCw,
   ChevronRight,
   Link2,
-  LoaderCircle
+  LoaderCircle,
+  UserPlus,
+  UserMinus
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -34,6 +36,7 @@ import { PLATFORM_CONFIGS } from '../data/platformConfig';
 import { fetchMetricsOverview, type MetricsOverview, type OverviewPost, type PlatformSummary } from '../lib/metricsApi';
 
 import { PlatformConnectionsSection } from './PlatformConnectionsSection';
+import type { RawDataTab } from './YoutubeRawDataPage';
 
 function relativeDay(value: string | null) {
   if (!value) return '';
@@ -54,9 +57,12 @@ function compactNumber(value: number) {
 interface DashboardProps {
   user: UserProfile;
   onOpenComposer?: () => void;
-  onOpenOnboarding: () => void;
+  /** 대시보드에 표시할 플랫폼 다시 고르기. */
+  onOpenPlatformSettings?: () => void;
+  /** 로그아웃 상태에서 연동을 누르면 로그인부터 시킨다. */
+  onOpenAuth?: () => void;
   onOpenAnalysis: (platform?: PlatformType | 'all') => void;
-  onOpenRawData?: () => void;
+  onOpenRawData?: (tab?: RawDataTab) => void;
   /** 값이 바뀌면 지표를 다시 읽는다. 영상 문구를 저장한 직후 갱신용. */
   dataVersion?: number;
 }
@@ -64,7 +70,8 @@ interface DashboardProps {
 export const Dashboard: React.FC<DashboardProps> = ({
   user,
   onOpenComposer,
-  onOpenOnboarding,
+  onOpenPlatformSettings,
+  onOpenAuth,
   onOpenAnalysis,
   onOpenRawData,
   dataVersion = 0,
@@ -123,6 +130,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
     totalViews: overview?.totals.views ?? 0,
     avgEngagement: (overview?.totals.engagementRate ?? 0).toFixed(1),
     growthPercent: overview?.totals.growthPercent ?? null,
+    subscribersGained: overview?.totals.subscribersGained ?? 0,
+    subscribersLost: overview?.totals.subscribersLost ?? 0,
+    conversionRate: overview?.totals.subscriberConversionRate ?? null,
   }), [overview]);
 
   const chartData = useMemo(() => overview?.chart ?? [], [overview]);
@@ -150,9 +160,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
             <span>{user.name}의 통합 대시보드</span>
-          </span>
-          <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-indigo-50/80 text-indigo-700 border border-indigo-200/50">
-            {user.userType === 'individual' ? '개인' : user.userType === 'team' ? '팀' : '기업'}
           </span>
         </div>
 
@@ -294,6 +301,45 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
       </div>
 
+      {/* 2-b. 무료 기본 지표 — 동기화된 데이터만으로 계산하므로 요금제와 무관하게 항상 보인다. */}
+      <div className="glass-panel rounded-2xl px-4 py-2.5 border border-white/70 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 shrink-0 rounded-xl bg-violet-500/10 text-violet-600 flex items-center justify-center">
+            <TrendingUp className="w-3.5 h-3.5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold text-slate-500">구독 전환율</p>
+            <p className="text-sm font-extrabold text-slate-900 -mt-0.5">
+              {aggregateMetrics.conversionRate === null ? '–' : `${aggregateMetrics.conversionRate}%`}
+              <span className="ml-1 text-[10px] font-medium text-slate-400">조회 1천 회당 {aggregateMetrics.conversionRate === null ? '–' : Math.round(aggregateMetrics.conversionRate * 10)}명</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5 sm:border-l sm:border-slate-200/60 sm:pl-4">
+          <div className="w-7 h-7 shrink-0 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
+            <UserPlus className="w-3.5 h-3.5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold text-slate-500">최근 {rangeDays}일 신규 구독</p>
+            <p className="text-sm font-extrabold text-emerald-600 -mt-0.5">+{aggregateMetrics.subscribersGained.toLocaleString()}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5 sm:border-l sm:border-slate-200/60 sm:pl-4">
+          <div className="w-7 h-7 shrink-0 rounded-xl bg-rose-500/10 text-rose-600 flex items-center justify-center">
+            <UserMinus className="w-3.5 h-3.5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold text-slate-500">최근 {rangeDays}일 구독 이탈</p>
+            <p className="text-sm font-extrabold text-rose-600 -mt-0.5">
+              −{aggregateMetrics.subscribersLost.toLocaleString()}
+              <span className="ml-1 text-[10px] font-medium text-slate-400">순증 {aggregateMetrics.subscribersGained - aggregateMetrics.subscribersLost >= 0 ? '+' : '−'}{Math.abs(aggregateMetrics.subscribersGained - aggregateMetrics.subscribersLost).toLocaleString()}</span>
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* 3. Platform Breakdown Cards Strip (Compact Horizontal Grid) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
         {activePlatforms.map((p) => {
@@ -369,25 +415,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <p className="text-xs font-bold text-slate-800">{compactNumber(stats!.views)}</p>
                   </div>
                 </div>
-              ) : p === 'youtube' ? (
-                // 유튜브만 실제 연결 경로가 있다. 로그인 전에는 OAuth를 시작할 수 없으므로 로그인으로 보낸다.
+              ) : (
+                // 네 플랫폼 모두 OAuth 경로가 있다. 로그인 전에는 시작할 수 없으므로 로그인으로 보낸다.
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (user.isLoggedIn) window.location.assign('/api/connections/youtube/start');
-                    else onOpenOnboarding();
+                    if (user.isLoggedIn) window.location.assign('/api/connections/' + p + '/start');
+                    else onOpenAuth?.();
                   }}
                   className="w-full mt-1 pt-1.5 border-t border-slate-200/40 text-[10px] font-semibold text-indigo-600 hover:text-indigo-800 flex items-center justify-center gap-1"
                 >
                   <Link2 className="w-3 h-3" />
                   <span>{user.isLoggedIn ? '연동하기' : '로그인하고 연동하기'}</span>
                 </button>
-              ) : (
-                // 인스타그램·쓰레드·X는 아직 연동 수단이 없다. 누르면 아무 일도 없는
-                // "연동하기" 버튼 대신 상태를 그대로 적는다.
-                <p className="w-full mt-1 pt-1.5 border-t border-slate-200/40 text-[10px] font-semibold text-slate-400 text-center">
-                  연동 지원 예정
-                </p>
               )}
             </div>
           );
@@ -578,7 +618,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       />
                       <span className="font-semibold text-slate-700">{conf.koreanName}</span>
                     </div>
-                    <span>{relativeDay(post.publishedAt)}</span>
+                    <div className="flex items-center gap-1.5">
+                      {/* 채널 자기 평소치 대비. 발행 직후 3일이 안 지난 영상은 배지가 없다. */}
+                      {post.medianMultiple !== null && (
+                        <span
+                          title={`발행 직후 3일 조회수 ${(post.initialViews ?? 0).toLocaleString()}회 · 이 채널 중앙값 대비`}
+                          className={`px-1.5 py-0.5 rounded font-extrabold ${
+                            post.medianMultiple >= 1 ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
+                          }`}
+                        >
+                          평소의 {post.medianMultiple.toFixed(1)}배
+                        </span>
+                      )}
+                      <span>{relativeDay(post.publishedAt)}</span>
+                    </div>
                   </div>
 
                   {post.permalink ? (
@@ -621,12 +674,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
               {connectedPlatforms.length}/{activePlatforms.length}개 플랫폼 연동됨
               {overview?.connectedCount ? ` · ${overview.recentPosts.length}개 콘텐츠 동기화` : ''}
             </span>
-            <button
-              onClick={onOpenOnboarding}
-              className="text-indigo-600 hover:underline font-medium"
-            >
-              질문 다시하기
-            </button>
+            {onOpenPlatformSettings && (
+              <button
+                onClick={onOpenPlatformSettings}
+                className="text-indigo-600 hover:underline font-medium"
+              >
+                플랫폼 설정
+              </button>
+            )}
           </div>
         </div>
 
