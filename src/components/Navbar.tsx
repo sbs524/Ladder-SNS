@@ -1,30 +1,32 @@
 import React from 'react';
-import { Sparkles, LogIn, LogOut, RefreshCw, Plus } from 'lucide-react';
+import { Sparkles, LogIn, LogOut, SlidersHorizontal, Plus } from 'lucide-react';
 import ladderMark from '../assets/ladder-mark.png';
 import { UserProfile } from '../types';
 
 interface NavbarProps {
   user: UserProfile;
   onOpenAuth: () => void;
-  onOpenOnboarding: () => void;
   onOpenComposer?: () => void;
   onOpenAnalysis?: () => void;
   onOpenMyPage?: () => void;
   onLogout: () => void;
   isHeroMode: boolean;
-  onToggleView: () => void;
+  /** 로고. 로그인 상태면 대시보드, 아니면 온보딩. */
+  onGoHome: () => void;
+  /** 대시보드에 표시할 플랫폼 다시 고르기. 로그인한 사용자에게만 있다. */
+  onOpenPlatformSettings?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   user,
   onOpenAuth,
-  onOpenOnboarding,
   onOpenComposer,
   onOpenAnalysis,
   onOpenMyPage,
   onLogout,
   isHeroMode,
-  onToggleView,
+  onGoHome,
+  onOpenPlatformSettings,
 }) => {
   return (
     <header className="w-full px-3 sm:px-6 py-2.5 z-40 transition-all">
@@ -33,7 +35,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Brand & Left minimal icon */}
         <button 
           id="nav-brand-btn"
-          onClick={onToggleView} 
+          onClick={onGoHome} 
           className="flex items-center gap-2.5 text-left group"
         >
           <img
@@ -56,15 +58,17 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex items-center gap-1.5 sm:gap-2">
           
           {/* Quick toggle to restart onboarding */}
-          {!isHeroMode && (
+          {/* 온보딩을 다시 여는 대신 설정을 연다. 로그인한 사용자를 온보딩으로 보내면 이미
+              로그인했는데 또 로그인 화면을 만난다. */}
+          {!isHeroMode && onOpenPlatformSettings && (
             <button
-              id="nav-switch-onboarding-btn"
-              onClick={onOpenOnboarding}
+              id="nav-platform-settings-btn"
+              onClick={onOpenPlatformSettings}
               className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-xl bg-white/40 hover:bg-white/70 text-slate-700 border border-white/60 transition-all"
-              title="설문 다시 열기"
+              title="표시할 플랫폼 설정"
             >
-              <RefreshCw className="w-3 h-3 text-slate-500" />
-              <span className="hidden sm:inline">질문 다시하기</span>
+              <SlidersHorizontal className="w-3 h-3 text-slate-500" />
+              <span className="hidden sm:inline">플랫폼 설정</span>
             </button>
           )}
 

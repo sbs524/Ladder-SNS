@@ -16,6 +16,8 @@ type CommentsPage = { comments: ManagedComment[]; next_cursor: string | null };
 const DELETE_CONFIRM_DELAY_MS = 2000;
 const TABS = ['개요', '영상 관리', '분석', '댓글 관리'] as const;
 type Tab = (typeof TABS)[number];
+/** 연동 정보 카드가 특정 탭으로 바로 열 수 있도록 내보낸다. */
+export type RawDataTab = Tab;
 
 async function api<T>(path: string, init: RequestInit = {}) {
   const response = await fetch(path, { credentials: 'include', ...init });
@@ -275,8 +277,8 @@ function CommentRow({ channelId, comment, canManage, onReplied, onModerated }: {
   );
 }
 
-export function YoutubeRawDataPage({ onBack }: { onBack: () => void }) {
-  const [tab, setTab] = useState<Tab>('개요');
+export function YoutubeRawDataPage({ onBack, initialTab = '개요' }: { onBack: () => void; initialTab?: Tab }) {
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [channels, setChannels] = useState<ChannelSummary[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [data, setData] = useState<RawDataResponse | null>(null);

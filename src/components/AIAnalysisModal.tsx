@@ -369,7 +369,7 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
               {!isPlus && youtubeInsights.length > 0 && (
                 <UpgradeCallout
                   title="심층 지표는 Plus 전용입니다"
-                  description="시청 지속률·CTR·바이럴 점수·시간대·포맷별 효율을 실제 채널 데이터로 봅니다. 아래 잠긴 항목이 모두 열립니다."
+                  description="바이럴 점수·업로드 시간대·포맷별 효율과 AI 종합 진단이 열립니다. 아래 잠긴 항목이 모두 열립니다."
                   onUpgrade={onUpgrade}
                   onBuyCredits={onBuyCredits}
                 />
@@ -386,15 +386,17 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
                     </h5>
                     <div className="space-y-2 text-[11px]">
                       {[
-                        { label: '시청 지속률', value: channel.retentionRate, bar: 'bg-indigo-500' },
-                        { label: '저장(재생목록 추가)률', value: channel.saveRate, bar: 'bg-rose-500' },
-                        { label: '노출 클릭률(CTR)', value: channel.clickThroughRate, bar: 'bg-sky-500' },
+                        // gated=false인 항목은 요금제와 무관하게 열려 있다. null은 "잠김"이 아니라
+                        // "아직 수집된 데이터가 없음"이므로 흐린 막대가 아니라 –를 보여준다.
+                        { label: '시청 지속률', value: channel.retentionRate, bar: 'bg-indigo-500', gated: false },
+                        { label: '저장(재생목록 추가)률', value: channel.saveRate, bar: 'bg-rose-500', gated: true },
+                        { label: '노출 클릭률(CTR)', value: channel.clickThroughRate, bar: 'bg-sky-500', gated: false },
                       ].map((row) => (
                         <div key={row.label}>
                           <div className="flex justify-between text-slate-600 mb-1">
                             <span>{row.label}</span>
                             <span className="font-bold text-slate-900">
-                              {row.value === null ? <LockedValue /> : `${row.value.toFixed(1)}%`}
+                              {row.value !== null ? `${row.value.toFixed(1)}%` : row.gated && !isPlus ? <LockedValue /> : '–'}
                             </span>
                           </div>
                           <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden">
@@ -408,7 +410,7 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
                       <span className="font-semibold text-slate-800">
                         {channel.topAudienceAge
                           ? `${channel.topAudienceAge.ageGroup.replace('age', '')}세 (${channel.topAudienceAge.sharePercent}%)`
-                          : <LockedValue width="w-16" />}
+                          : '–'}
                       </span>
                     </div>
                   </div>
@@ -573,15 +575,8 @@ export const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
                       </div>
                     </div>
 
-                    {isPlus ? deepPanel : (
-                      <PlusLock
-                        title="심층 성과 지표는 Plus 전용"
-                        description="시청 지속률·저장률·CTR·주력 연령대를 실제 채널 데이터로 확인할 수 있습니다."
-                        showCta={false}
-                      >
-                        {deepPanel}
-                      </PlusLock>
-                    )}
+                    {/* 시청 지속률·CTR·주력 연령대는 YouTube Studio가 이미 무료로 주는 값이라 잠그지 않는다. */}
+                    {deepPanel}
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {isPlus ? viralityPanel : (
