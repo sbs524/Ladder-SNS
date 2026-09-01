@@ -1,6 +1,20 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { Express, Request, Response } from "express";
-import { getAppUrl, getAuthenticatedUser, getPlanForProfile } from "./auth";
+import { getAuthenticatedUser, getPlanForProfile } from "./auth";
+import {
+  callbackUrl as buildCallbackUrl,
+  clearOAuthState as clearSharedOAuthState,
+  createOAuthState as createSharedOAuthState,
+  decryptToken as decryptSharedToken,
+  encodeCiphertext,
+  encryptToken,
+  isProduction,
+  pkceChallenge,
+  readOAuthState as readSharedOAuthState,
+  redirectToApp as redirectToAppWithStatus,
+  setOAuthStateCookie,
+  type OAuthStateCookie,
+} from "./oauth";
 import { CHANNEL_LIMITS } from "./usage";
 import { ApiError, getAdminClient, requireString, toErrorResponse } from "./supabaseAdmin";
 
@@ -135,34 +149,12 @@ function getGoogleConfig() {
   };
 }
 
-function isProduction() {
-  return process.env.NODE_ENV === "production";
-}
-
-function getCookie(req: Request, name: string) {
-  const header = req.headers.cookie;
-  if (!header) return null;
-  for (const part of header.split(";")) {
-    const separator = part.indexOf("=");
-    if (separator < 0 || part.slice(0, separator).trim() !== name) continue;
-    try {
-      return decodeURIComponent(part.slice(separator + 1));
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
 function callbackUrl() {
-  return `${getAppUrl()}${YOUTUBE_CALLBACK_PATH}`;
+  return buildCallbackUrl(YOUTUBE_CALLBACK_PATH);
 }
 
 function redirectToApp(res: Response, status: "connected" | "denied" | "error", reason?: string) {
-  const url = new URL(getAppUrl());
-  url.searchParams.set("youtube", status);
-  if (reason) url.searchParams.set("youtube_reason", reason);
-  return res.redirect(303, url.toString());
+  return redirectToAppWithStatus(res, "youtube", status, reason);
 }
 
 function parsePositiveInt(value: unknown, fallback: number, maximum: number) {
@@ -191,87 +183,25 @@ function makeCursor(row: { source_published_at: string | null; social_comment_id
   return Buffer.from(JSON.stringify({ at: row.source_published_at, id: row.social_comment_id })).toString("base64url");
 }
 
-function getStateSecret() {
-  return requireString(process.env.OAUTH_STATE_SECRET, "OAUTH_STATE_SECRET");
-}
-
-function signState(payload: string) {
-  return createHmac("sha256", getStateSecret()).update(payload).digest("base64url");
-}
+const YOUTUBE_STATE_COOKIE_SPEC: OAuthStateCookie = { name: YOUTUBE_STATE_COOKIE, path: YOUTUBE_CALLBACK_PATH };
 
 function createOAuthState(profileId: string, includeRevenue: boolean) {
-  const verifier = randomBytes(48).toString("base64url");
-  const state = randomBytes(32).toString("base64url");
-  const payload = Buffer.from(JSON.stringify({ profileId, includeRevenue, state, verifier, expiresAt: Date.now() + 10 * 60 * 1000 })).toString("base64url");
-  return { state, verifier, cookieValue: `${payload}.${signState(payload)}` };
+  return createSharedOAuthState(profileId, { includeRevenue });
 }
 
 function readOAuthState(req: Request, returnedState: string | null) {
-  const value = getCookie(req, YOUTUBE_STATE_COOKIE);
-  if (!value) throw new ApiError(401, "YOUTUBE_OAUTH_STATE_MISSING", "The YouTube connection session has expired.");
-  const separator = value.lastIndexOf(".");
-  if (separator < 0) throw new ApiError(401, "YOUTUBE_OAUTH_STATE_INVALID", "Invalid YouTube connection state.");
-  const payload = value.slice(0, separator);
-  const signature = value.slice(separator + 1);
-  const expected = signState(payload);
-  const actualBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expected);
-  if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
-    throw new ApiError(401, "YOUTUBE_OAUTH_STATE_INVALID", "Invalid YouTube connection state.");
-  }
-  let parsed: { profileId?: unknown; includeRevenue?: unknown; state?: unknown; verifier?: unknown; expiresAt?: unknown };
-  try {
-    parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-  } catch {
-    throw new ApiError(401, "YOUTUBE_OAUTH_STATE_INVALID", "Invalid YouTube connection state.");
-  }
-  if (
-    typeof parsed.profileId !== "string" ||
-    typeof parsed.state !== "string" ||
-    typeof parsed.verifier !== "string" ||
-    typeof parsed.expiresAt !== "number" ||
-    parsed.expiresAt < Date.now() ||
-    parsed.state !== returnedState
-  ) {
-    throw new ApiError(401, "YOUTUBE_OAUTH_STATE_INVALID", "Invalid or expired YouTube connection state.");
-  }
-  return { profileId: parsed.profileId, verifier: parsed.verifier, includeRevenue: parsed.includeRevenue === true };
+  const parsed = readSharedOAuthState(req, returnedState, YOUTUBE_STATE_COOKIE_SPEC, "YOUTUBE");
+  return { profileId: parsed.profileId, verifier: parsed.verifier, includeRevenue: parsed.extra.includeRevenue === true };
 }
 
 function clearOAuthState(res: Response) {
-  res.clearCookie(YOUTUBE_STATE_COOKIE, { httpOnly: true, secure: isProduction(), sameSite: "lax", path: YOUTUBE_CALLBACK_PATH });
-}
-
-function getEncryptionKey() {
-  const value = requireString(process.env.OAUTH_TOKEN_ENCRYPTION_KEY, "OAUTH_TOKEN_ENCRYPTION_KEY");
-  const key = /^[0-9a-f]{64}$/i.test(value) ? Buffer.from(value, "hex") : Buffer.from(value, "base64");
-  if (key.length !== 32) throw new ApiError(503, "YOUTUBE_NOT_CONFIGURED", "OAUTH_TOKEN_ENCRYPTION_KEY must be a 32-byte base64 or 64-character hex key.");
-  return key;
-}
-
-function encryptToken(value: string) {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", getEncryptionKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]);
+  clearSharedOAuthState(res, YOUTUBE_STATE_COOKIE_SPEC);
 }
 
 function decryptToken(value: string | null) {
-  if (!value) throw new ApiError(401, "YOUTUBE_REAUTH_REQUIRED", "Reconnect YouTube to refresh its access token.");
-  const payload = Buffer.from(value, "base64");
-  if (payload.length < 29) throw new ApiError(503, "YOUTUBE_TOKEN_INVALID", "Stored YouTube credentials are invalid.");
-  const decipher = createDecipheriv("aes-256-gcm", getEncryptionKey(), payload.subarray(0, 12));
-  decipher.setAuthTag(payload.subarray(12, 28));
-  return Buffer.concat([decipher.update(payload.subarray(28)), decipher.final()]).toString("utf8");
+  return decryptSharedToken(value, "YOUTUBE");
 }
 
-function encodeCiphertext(value: Buffer) {
-  return value.toString("base64");
-}
-
-function pkceChallenge(verifier: string) {
-  return createHash("sha256").update(verifier).digest("base64url");
-}
 
 async function googleJson<T>(url: URL | string, accessToken?: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -1042,13 +972,7 @@ export function registerYoutubeRoutes(app: Express) {
       const includeRevenue = req.query.include_revenue === "true";
       const { clientId } = getGoogleConfig();
       const oauth = createOAuthState(authenticatedUser.user.id, includeRevenue);
-      res.cookie(YOUTUBE_STATE_COOKIE, oauth.cookieValue, {
-        httpOnly: true,
-        secure: isProduction(),
-        sameSite: "lax",
-        path: YOUTUBE_CALLBACK_PATH,
-        maxAge: 10 * 60 * 1000,
-      });
+      setOAuthStateCookie(res, YOUTUBE_STATE_COOKIE_SPEC, oauth.cookieValue, oauth.maxAge);
       const scopes = [
         "openid",
         YOUTUBE_WRITE_SCOPE,

@@ -7,6 +7,7 @@ import { registerYoutubeRoutes, startYoutubeSyncWorker } from "./src/server/yout
 import { registerMetricsRoutes } from "./src/server/metrics";
 import { registerInsightsRoutes } from "./src/server/insights";
 import { registerAiRoutes } from "./src/server/ai";
+import { registerSocialConnectionRoutes } from "./src/server/socialConnections";
 
 dotenv.config({ path: ".env.local" });
 dotenv.config();
@@ -34,6 +35,7 @@ async function startServer() {
   registerMetricsRoutes(app);
   registerInsightsRoutes(app);
   registerAiRoutes(app);
+  registerSocialConnectionRoutes(app);
   startYoutubeSyncWorker();
 
   // Vite middleware for development
