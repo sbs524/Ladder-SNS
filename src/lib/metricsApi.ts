@@ -9,6 +9,10 @@ export type PlatformSummary = {
   avatarUrl: string | null;
   followers: number;
   followersChange: number;
+  subscribersGained: number;
+  subscribersLost: number;
+  /** 조회수 대비 신규 구독(%). 기간 내 조회수가 없으면 null. */
+  subscriberConversionRate: number | null;
   views: number;
   viewsChangePercent: number | null;
   engagementRate: number;
@@ -38,6 +42,10 @@ export type OverviewPost = {
   likes: number;
   comments: number;
   shares: number;
+  /** 발행 직후 3일 조회수. 그 기간을 아직 못 채운 영상은 null. */
+  initialViews: number | null;
+  /** 초기 조회수 ÷ 채널 초기 조회수 중앙값. 비교할 표본이 없으면 null. */
+  medianMultiple: number | null;
 };
 
 export type MetricsOverview = {
@@ -50,6 +58,9 @@ export type MetricsOverview = {
     views: number;
     engagementRate: number;
     growthPercent: number | null;
+    subscribersGained: number;
+    subscribersLost: number;
+    subscriberConversionRate: number | null;
   };
   platforms: PlatformSummary[];
   chart: OverviewChartPoint[];

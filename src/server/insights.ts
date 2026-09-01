@@ -1,7 +1,10 @@
 import type { Express, Response } from "express";
 import { getAuthenticatedUser, getPlanForProfile } from "./auth";
 import { getAdminClient, toErrorResponse } from "./supabaseAdmin";
-import { num, utcDayString } from "./metrics";
+import { loadInitialSamples, median, num, utcDayString } from "./metrics";
+
+// 중앙값은 대시보드 배지와 같은 정의를 써야 하므로 metrics.ts가 원본이다. 기존 임포트를 위해 다시 내보낸다.
+export { median };
 
 // Deep engagement metrics for the AI analysis screen. Every formula here is specified in
 // docs/과금_및_지표_정의.md §5 — change one and change the other.
@@ -29,15 +32,18 @@ type SlotId = (typeof TIME_SLOTS)[number]["id"];
 const MIN_VIDEOS_FOR_PEAK_TIME = 12;
 const MIN_VIDEOS_PER_SLOT = 3;
 const MIN_VIDEOS_PER_FORMAT = 3;
-const INITIAL_PERFORMANCE_DAYS = 3; // 발행일 포함 3일
 const MIN_SUBSCRIBERS_FOR_REACH = 10;
 
 // Plus-only fields. The basic engagement ratios stay free so that connecting a channel is still
 // worth doing on the free plan (기획서 6.1) — what Plus buys is the interpretation layer.
 //
+// 시청 지속률·CTR·주력 연령대는 YouTube Studio가 이미 무료로 보여주는 값이라 잠그지 않는다.
+// 탭 하나만 열면 볼 수 있는 숫자를 가리는 페이월은 매출이 아니라 신뢰만 깎는다. Plus가 파는 건
+// 우리가 정의한 합성 점수(virality)와 행동 권고(peakTime·formats), 그리고 AI 해석이다.
+//
 // These are withheld by the server, not hidden by the client. A CSS blur over data that was
 // already sent is not a paywall; anyone can read it in devtools.
-const PLUS_ONLY_FIELDS = ["retentionRate", "clickThroughRate", "saveRate", "topAudienceAge", "virality", "peakTime", "formats", "bestFormat"] as const;
+const PLUS_ONLY_FIELDS = ["saveRate", "virality", "peakTime", "formats", "bestFormat"] as const;
 
 export type FormatId = "shorts" | "midform" | "longform" | "live";
 
@@ -57,13 +63,6 @@ const FORMAT_LABELS: Record<FormatId, string> = {
 export function norm(value: number, ref: number): number {
   if (!(value > 0) || !(ref > 0)) return 0;
   return Math.max(0, Math.min(100, 50 + 25 * Math.log2(value / ref)));
-}
-
-export function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
 }
 
 /**
@@ -270,12 +269,6 @@ function sendError(res: Response, status: number, code: string, message: string)
   return res.status(status).json({ error: { code, message } });
 }
 
-function dayOffset(from: string, days: number) {
-  const date = new Date(`${from}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
 export function registerInsightsRoutes(app: Express) {
   app.get("/api/metrics/insights", async (req, res) => {
     try {
@@ -302,7 +295,7 @@ export function registerInsightsRoutes(app: Express) {
       }
       const channelIds = channels.map((channel) => channel.social_channel_id as string);
 
-      const [dailyResult, breakdownResult, contentResult] = await Promise.all([
+      const [dailyResult, breakdownResult, initialSamples] = await Promise.all([
         db
           .from("youtube_channel_daily_metrics")
           .select("social_channel_id, views, likes, comments, shares, average_view_percentage, impressions_click_through_rate")
@@ -314,67 +307,23 @@ export function registerInsightsRoutes(app: Express) {
           .in("social_channel_id", channelIds)
           .in("report_type", ["subscribed_status", "audience"])
           .gte("metric_date", since),
-        db
-          .from("social_contents")
-          .select("social_content_id, social_channel_id, source_published_at, youtube_videos(youtube_video_id, duration_seconds, live_broadcast_content)")
-          .in("social_channel_id", channelIds)
-          .eq("platform", "youtube"),
+        // Initial performance is per-video views over the first few days after publishing, so that
+        // older videos do not automatically outrank recent ones. 대시보드와 같은 표본을 쓴다.
+        loadInitialSamples(db, channelIds),
       ]);
       if (dailyResult.error) throw dailyResult.error;
       if (breakdownResult.error) throw breakdownResult.error;
-      if (contentResult.error) throw contentResult.error;
 
-      type VideoRef = { youtubeVideoId: string; channelId: string; publishedAt: string | null; format: FormatId };
-      const videoRefs: VideoRef[] = [];
-      for (const content of contentResult.data || []) {
-        const relation = content.youtube_videos as { youtube_video_id: string; duration_seconds: number | null; live_broadcast_content: string | null } | null | Array<{ youtube_video_id: string; duration_seconds: number | null; live_broadcast_content: string | null }>;
-        const video = Array.isArray(relation) ? relation[0] : relation;
-        if (!video) continue;
-        videoRefs.push({
-          youtubeVideoId: video.youtube_video_id,
-          channelId: content.social_channel_id as string,
-          publishedAt: (content.source_published_at as string | null) || null,
-          format: classifyFormat(video.duration_seconds, video.live_broadcast_content),
-        });
-      }
-
-      // Initial performance is per-video views over the first few days after publishing, so that
-      // older videos do not automatically outrank recent ones.
-      const videoDaily = new Map<string, Array<{ date: string; views: number; shares: number | null }>>();
-      if (videoRefs.length > 0) {
-        const { data: videoMetrics, error: videoMetricsError } = await db
-          .from("youtube_video_daily_metrics")
-          .select("youtube_video_id, metric_date, views, shares")
-          .in("youtube_video_id", videoRefs.map((video) => video.youtubeVideoId));
-        if (videoMetricsError) throw videoMetricsError;
-        for (const row of videoMetrics || []) {
-          const id = row.youtube_video_id as string;
-          const bucket = videoDaily.get(id) || [];
-          bucket.push({ date: row.metric_date as string, views: num(row.views), shares: row.shares === null ? null : num(row.shares) });
-          videoDaily.set(id, bucket);
-        }
-      }
-
-      const todayString = utcDayString(0);
       const samplesByChannel = new Map<string, VideoSample[]>();
-      for (const video of videoRefs) {
-        if (!video.publishedAt) continue;
-        const publishedDay = video.publishedAt.slice(0, 10);
-        const windowEnd = dayOffset(publishedDay, INITIAL_PERFORMANCE_DAYS - 1);
-        // Videos younger than the window have not had a fair chance yet.
-        if (windowEnd > todayString) continue;
-        const rows = videoDaily.get(video.youtubeVideoId) || [];
-        const inWindow = rows.filter((row) => row.date >= publishedDay && row.date <= windowEnd);
-        if (inWindow.length === 0) continue;
-        const shareRows = rows.map((row) => row.shares).filter((value): value is number => value !== null);
-        const bucket = samplesByChannel.get(video.channelId) || [];
+      for (const sample of initialSamples) {
+        const bucket = samplesByChannel.get(sample.channelId) || [];
         bucket.push({
-          publishedAt: video.publishedAt,
-          initialViews: inWindow.reduce((sum, row) => sum + row.views, 0),
-          format: video.format,
-          shares: shareRows.length > 0 ? shareRows.reduce((sum, value) => sum + value, 0) : null,
+          publishedAt: sample.publishedAt,
+          initialViews: sample.initialViews,
+          format: classifyFormat(sample.durationSeconds, sample.liveBroadcastContent),
+          shares: sample.shares,
         });
-        samplesByChannel.set(video.channelId, bucket);
+        samplesByChannel.set(sample.channelId, bucket);
       }
 
       const result = channels.map((channel) => {
