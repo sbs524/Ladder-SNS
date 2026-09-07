@@ -166,7 +166,7 @@ function readId(value: unknown) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(value) ? value : null;
 }
 
-function parseCursor(value: unknown): { at: string; id: string } | null {
+export function parseCursor(value: unknown): { at: string; id: string } | null {
   if (typeof value !== "string" || !value) return null;
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as { at?: unknown; id?: unknown };
@@ -178,7 +178,7 @@ function parseCursor(value: unknown): { at: string; id: string } | null {
   }
 }
 
-function makeCursor(row: { source_published_at: string | null; social_comment_id: string }) {
+export function makeCursor(row: { source_published_at: string | null; social_comment_id: string }) {
   if (!row.source_published_at) return null;
   return Buffer.from(JSON.stringify({ at: row.source_published_at, id: row.social_comment_id })).toString("base64url");
 }
@@ -393,14 +393,14 @@ function asBigint(value: unknown) {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
-function parseDurationSeconds(value: string | undefined) {
+export function parseDurationSeconds(value: string | undefined) {
   if (!value) return null;
   const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(value);
   if (!match) return null;
   return Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0);
 }
 
-function contentTypeForVideo(video: GoogleVideo) {
+export function contentTypeForVideo(video: GoogleVideo) {
   if (video.snippet?.liveBroadcastContent === "live" || video.liveStreamingDetails?.actualStartTime) return "live";
   const duration = parseDurationSeconds(video.contentDetails?.duration);
   return duration !== null && duration <= 60 ? "short" : "video";
@@ -617,7 +617,7 @@ const metricColumnNames: Record<string, string> = {
   playbackBasedCpm: "playback_based_cpm",
 };
 
-function stableHash(value: JsonRecord) {
+export function stableHash(value: JsonRecord) {
   const ordered = Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)));
   return createHash("sha256").update(JSON.stringify(ordered)).digest("hex");
 }
@@ -726,29 +726,101 @@ async function syncAnalytics(db: ReturnType<typeof getAdminClient>, channel: Soc
     console.warn(`Skipping unavailable YouTube sharing_service breakdown for ${channel.social_channel_id}:`, error instanceof Error ? error.message : error);
   }
 
-  const retentionPoints = await syncRetentionCurves(db, channel, accessToken);
-  return { dailyMetrics: daily.size, breakdowns: breakdownCount, retentionPoints };
+  const videoTargets = await loadRecentVideoTargets(db, channel);
+  const retentionPoints = await syncRetentionCurves(db, channel, accessToken, videoTargets);
+  const videoDailyMetrics = await syncVideoDailyMetrics(db, channel, grant, accessToken, videoTargets, startDate, endDate);
+  return { dailyMetrics: daily.size, breakdowns: breakdownCount, retentionPoints, videoDailyMetrics };
 }
 
-// Audience retention is per-video only (the API requires filters=video==ID) and is capped to the
-// most recently published videos so a channel with a large back catalog doesn't multiply API calls.
-const RETENTION_VIDEO_LIMIT = 15;
+// Per-video Analytics queries (retention curves, per-video daily metrics) require filters=video==ID,
+// one API call per video — capped to the most recently published videos so a channel with a large
+// back catalog doesn't multiply API calls without bound.
+const ANALYTICS_VIDEO_LIMIT = 15;
 
-async function syncRetentionCurves(db: ReturnType<typeof getAdminClient>, channel: SocialChannel, accessToken: string) {
+async function loadRecentVideoTargets(db: ReturnType<typeof getAdminClient>, channel: SocialChannel) {
   const { data: contents, error } = await db
     .from("social_contents")
     .select("external_content_id, youtube_videos(youtube_video_id)")
     .eq("social_channel_id", channel.social_channel_id)
     .eq("platform", "youtube")
     .order("source_published_at", { ascending: false, nullsFirst: false })
-    .limit(RETENTION_VIDEO_LIMIT);
+    .limit(ANALYTICS_VIDEO_LIMIT);
   if (error) throw error;
 
-  const targets = (contents || []).flatMap((row) => {
+  return (contents || []).flatMap((row) => {
     const relation = row.youtube_videos as { youtube_video_id: string } | { youtube_video_id: string }[] | null;
     const youtubeVideoId = Array.isArray(relation) ? relation[0]?.youtube_video_id : relation?.youtube_video_id;
     return youtubeVideoId ? [{ externalId: row.external_content_id as string, youtubeVideoId }] : [];
   });
+}
+
+// Metrics that youtube_video_daily_metrics has columns for — a subset of metricColumnNames, since
+// some channel-level metrics (subscribersGained/Lost, cpm, grossRevenue, ...) don't exist per-video.
+export const VIDEO_METRIC_COLUMNS = new Set([
+  "views", "engaged_views", "estimated_minutes_watched", "average_view_duration_seconds",
+  "average_view_percentage", "likes", "dislikes", "comments", "shares", "impressions",
+  "impressions_click_through_rate", "estimated_revenue", "estimated_ad_revenue", "monetized_playbacks",
+]);
+const VIDEO_BASE_METRICS = "views,engagedViews,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,dislikes,comments,shares,impressions,impressionsClickThroughRate";
+const VIDEO_REVENUE_METRICS = "estimatedRevenue,estimatedAdRevenue,monetizedPlaybacks";
+
+// Picks only the Analytics API fields that youtube_video_daily_metrics has columns for, translating
+// each to its database column name. Exported (pure) so the merge logic is testable without mocking
+// the Google API or Supabase.
+export function pickVideoMetricColumns(row: JsonRecord): JsonRecord {
+  const picked: JsonRecord = {};
+  for (const [apiName, databaseName] of Object.entries(metricColumnNames)) {
+    if (VIDEO_METRIC_COLUMNS.has(databaseName) && row[apiName] !== undefined) picked[databaseName] = row[apiName];
+  }
+  return picked;
+}
+
+async function syncVideoDailyMetrics(
+  db: ReturnType<typeof getAdminClient>,
+  channel: SocialChannel,
+  grant: OAuthGrant,
+  accessToken: string,
+  targets: Array<{ externalId: string; youtubeVideoId: string }>,
+  startDate: string,
+  endDate: string,
+) {
+  const hasRevenueScope = grant.granted_scopes.includes("https://www.googleapis.com/auth/yt-analytics-monetary.readonly");
+  let stored = 0;
+  for (const target of targets) {
+    try {
+      const daily = new Map<string, JsonRecord>();
+      const mergeRows = (rows: JsonRecord[]) => {
+        for (const row of rows) {
+          const day = typeof row.day === "string" ? row.day : null;
+          if (!day) continue;
+          const rowTarget = daily.get(day) || { youtube_video_id: target.youtubeVideoId, metric_date: day };
+          Object.assign(rowTarget, pickVideoMetricColumns(row));
+          daily.set(day, rowTarget);
+        }
+      };
+      mergeRows(await analyticsRows(accessToken, startDate, endDate, "day", VIDEO_BASE_METRICS, `video==${target.externalId}`));
+      if (hasRevenueScope) mergeRows(await analyticsRows(accessToken, startDate, endDate, "day", VIDEO_REVENUE_METRICS, `video==${target.externalId}`));
+      if (daily.size > 0) {
+        const rows = [...daily.values()].map((row) => ({ ...row, source_retrieved_at: new Date().toISOString() }));
+        const { error } = await db.from("youtube_video_daily_metrics").upsert(rows, { onConflict: "youtube_video_id,metric_date" });
+        if (error) throw error;
+        stored += rows.length;
+      }
+    } catch (error) {
+      // A single video's Analytics data can be unavailable (privacy thresholds, deleted video); skip
+      // it, not the whole channel sync.
+      console.warn(`Skipping daily metrics for YouTube video ${target.externalId}:`, error instanceof Error ? error.message : error);
+    }
+  }
+  return stored;
+}
+
+async function syncRetentionCurves(
+  db: ReturnType<typeof getAdminClient>,
+  channel: SocialChannel,
+  accessToken: string,
+  targets: Array<{ externalId: string; youtubeVideoId: string }>,
+) {
   if (targets.length === 0) return 0;
 
   const endDate = new Date().toISOString().slice(0, 10);
@@ -888,7 +960,7 @@ async function failJob(db: ReturnType<typeof getAdminClient>, job: SyncJob, erro
   await db.from("platform_sync_jobs").update({ status: "failed", finished_at: new Date().toISOString(), error_code: error instanceof ApiError ? error.code : "SYNC_FAILED", error_message: message }).eq("platform_sync_job_id", job.platform_sync_job_id);
 }
 
-function readJobCursor(cursor: string | null) {
+export function readJobCursor(cursor: string | null) {
   if (!cursor) return {} as { page_token?: string };
   try {
     const parsed = JSON.parse(cursor) as { page_token?: unknown };

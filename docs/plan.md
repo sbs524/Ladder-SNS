@@ -22,25 +22,29 @@ research.md의 "결론 및 권장 우선순위"를 따르되, 각 항목을 착�
 **목표**: 영상별 일별 조회수(및 필요 시 shares)를 실제로 적재하여 `virality`,
 `peakTime`, `formats`, `bestFormat`, `medianMultiple` 배지가 실데이터로 동작하게 한다.
 
-- [ ] 1-1. 설계 확정: YouTube Analytics API `reports.query`에 `filters=video==ID`로
-  일별 조회수를 채널의 각 영상마다 조회하는 방식(A안) vs. `social_contents.current_metrics`
-  누적 조회수 스냅샷을 매 동기화마다 diff하여 일별 값으로 환산하는 방식(B안) 중 택일.
-  - A안은 `syncRetentionCurves`(`src/server/youtube.ts`)에 선례가 있어 구현 리스크가
-    낮지만 영상 수만큼 API 호출이 늘어 쿼터 소모가 커진다(9번 항목의 채널 수
-    제한과 함께 검토).
-  - B안은 추가 API 호출이 없지만 "일별 값"이 아니라 "동기화 주기 간 증분"이 되어
-    동기화 주기가 불규칙하면 부정확해질 수 있다.
-  - 결정 후 이 계획 문서와 `docs/과금_및_지표_정의.md`에 채택 이유를 기록한다.
-- [ ] 1-2. `src/server/youtube.ts`의 `syncAnalytics`(또는 신규 함수)에 채택한 방식으로
-  `youtube_video_daily_metrics` upsert 로직을 추가한다. 기존 채널 단위 동기화와
-  동일하게 job 큐/재시도/부분 실패 처리 패턴을 따른다.
-- [ ] 1-3. 신규 동기화 로직에 대한 유닛 테스트 추가(모킹된 Analytics 응답 → upsert
-  payload 검증).
+- [x] 1-1. 설계 확정: **A안 채택** — YouTube Analytics API에 `filters=video==ID`로
+  영상별 일별 조회수를 조회. `syncRetentionCurves`(`src/server/youtube.ts`)와 동일한
+  패턴이라 구현 리스크가 낮고, 이미 존재하는 리텐션 곡선 수집과 대상 영상 목록을
+  공유할 수 있어 쿼터 증가분을 최소화할 수 있다는 점을 근거로 B안(누적 스냅샷 diff)
+  대신 선택. 채택 이유는 `docs/과금_및_지표_정의.md`(§영상별 초기 성과)에 기록.
+- [x] 1-2. `src/server/youtube.ts`에 `loadRecentVideoTargets`(리텐션 곡선과 공유하는
+  "최근 발행 15개 영상" 대상 목록 조회)와 `syncVideoDailyMetrics`(영상별 일별 지표
+  upsert)를 추가하고, `syncAnalytics`에서 `syncRetentionCurves`와 함께 호출하도록
+  연결. 기존 채널 단위 동기화와 동일하게 실패한 영상 1개가 전체 동기화를 막지 않도록
+  try/catch로 개별 격리.
+- [x] 1-3. 신규 로직의 핵심 매핑(`pickVideoMetricColumns`)을 순수 함수로 분리해
+  export하고 `src/server/youtube.test.ts`(신규, `youtube.ts`의 첫 테스트 파일)에서
+  검증. 동시에 `parseDurationSeconds`, `contentTypeForVideo`, `parseCursor`/`makeCursor`,
+  `readJobCursor`, `stableHash` 등 이번 감사에서 지적된 순수 함수 테스트 공백도 함께
+  메움(3번 항목 착수 일부 겸함).
 - [ ] 1-4. `src/server/metrics.ts`의 `loadInitialSamples()` 및 이를 사용하는
   `medianMultiple`, `viralityScore`, `peakTimeByUploadSlot`, `formatStats`/`bestFormat`
-  경로가 실제로 채워진 데이터를 정상적으로 소비하는지 통합 테스트로 검증.
+  경로가 실제로 채워진 데이터를 정상적으로 소비하는지 통합 테스트로 검증. (스키마·컬럼명은
+  이미 일치함을 코드 리딩으로 확인했으나, 실제 Supabase 환경에서의 end-to-end 검증은
+  아직 미실시.)
 - [ ] 1-5. 기존 연결(과거 데이터 없음)에 대한 백필 여부 결정: 신규 데이터만
   쌓을지, 과거 구간을 소급 조회할지 정하고 필요 시 1회성 백필 스크립트 작성.
+  (현재는 신규 동기화 시점부터만 쌓이며, 채널당 최근 15개 영상으로 범위가 제한됨.)
 
 ---
 
