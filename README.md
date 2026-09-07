@@ -19,13 +19,18 @@ npm run dev
 
 → http://localhost:3000
 
-**API 키 없이도 전부 동작합니다.** AI 분석은 하드코딩된 폴백 응답으로 대체되고,
-나머지 화면은 목업 데이터로 정상적으로 렌더링됩니다.
-
-실제 Gemini를 붙이고 싶으면 프로젝트 루트에 `.env`:
+**API 키 없이는 정상 동작하지 않습니다.** Supabase(DB/인증), Google OAuth(YouTube 연동),
+Gemini(AI 분석) 키가 없으면 해당 기능 호출 시 서버가 즉시 에러를 반환합니다(과거에는
+Gemini 키가 없을 때 하드코딩된 폴백 응답으로 대체했지만, 실데이터가 아닌 응답을 실제인
+것처럼 보여주는 것이 문제라 판단해 의도적으로 제거했습니다). 필요한 환경 변수 전체 목록은
+[`.env.example`](.env.example)을 참고하세요.
 
 ```
 GEMINI_API_KEY=여기에_키
+VITE_SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
+GOOGLE_YOUTUBE_CLIENT_ID=...
+GOOGLE_YOUTUBE_CLIENT_SECRET=...
 ```
 
 ---
@@ -36,7 +41,7 @@ GEMINI_API_KEY=여기에_키
 |---|---|
 | `npm run dev` | 개발 서버 (Express + Vite 미들웨어, 포트 3000) |
 | `npm run lint` | 타입 검사 (`tsc --noEmit`) |
-| `npm run test` | 단위 테스트 (비밀번호 정책) |
+| `npm run test` | 단위 테스트 (비밀번호 정책, YouTube 동기화, 지표 계산, AI/사용량 게이팅 등) |
 | `npm run build` | 프로덕션 빌드 → `dist/` |
 | `npm start` | 빌드 결과 실행 |
 
@@ -62,21 +67,38 @@ GEMINI_API_KEY=여기에_키
 
 ```
 src/
-  App.tsx                  루트. 유저 상태 + 모달 관리
-  types.ts                 전체 타입 정의
-  passwordPolicy.ts        회원가입 비밀번호 규칙 (+ .test.ts)
-  index.css                글래스모피즘 유틸리티 클래스
-  data/mockData.ts         ★ 목업 데이터 전부 여기
-  assets/ladder-mark.png   브랜드 마크
+  App.tsx                       루트. 유저 상태 + 모달 관리
+  types.ts                      전체 타입 정의
+  passwordPolicy.ts             회원가입 비밀번호 규칙 (+ .test.ts)
+  index.css                     글래스모피즘 유틸리티 클래스
+  assets/ladder-mark.png        브랜드 마크
   components/
-    Navbar.tsx             상단 헤더
-    OnboardingHero.tsx     온보딩 3단계
-    Dashboard.tsx          대시보드 본체
-    AuthModal.tsx          로그인 / 회원가입
-    AIAnalysisModal.tsx    AI 분석 (3탭)
-    PostComposerModal.tsx  글 작성
-    OnboardingModal.tsx    ⚠️ 미사용 (어디서도 import 안 함)
-server.ts                  Express + Gemini 프록시
+    Navbar.tsx                  상단 헤더
+    OnboardingHero.tsx          온보딩 3단계
+    Dashboard.tsx               대시보드 본체
+    MyPage.tsx                  마이페이지 (플랜/계정 관리)
+    AuthModal.tsx                로그인 / 회원가입
+    AIAnalysisModal.tsx         AI 분석 (3탭)
+    PlatformConnectionsSection.tsx  플랫폼 연동 목록 (YouTube/Instagram/Threads/X)
+    PlatformSettingsModal.tsx   개별 플랫폼 연동 설정
+    VideoDraftModal.tsx         글작성/영상 초안
+    YoutubeRawDataPage.tsx      YouTube 원본 데이터 뷰
+    PlusLock.tsx                Plus 전용 기능 잠금 UI
+  lib/
+    authApi.ts, metricsApi.ts, aiApi.ts, insightsApi.ts, youtubeManageApi.ts
+                                 각 서버 API를 감싸는 클라이언트 래퍼
+  server/
+    auth.ts                    Supabase Auth 세션/플랜 조회
+    oauth.ts                   공용 OAuth state/PKCE/토큰 암복호화 유틸
+    youtube.ts                 YouTube OAuth·동기화 잡 큐·영상/댓글 관리 API (+ .test.ts)
+    socialConnections.ts       Instagram/Threads/X OAuth 어댑터 (+ .test.ts)
+    metrics.ts                 대시보드 지표 계산 (+ .test.ts)
+    insights.ts                Plus 전용 딥 인사이트(바이럴리티/피크타임/포맷) (+ .test.ts)
+    ai.ts                      Gemini 프록시, 서버 측 컨텍스트 재계산, Plus 게이팅 (+ .test.ts)
+    usage.ts                   월 할당량/크레딧/채널 수 상한 (+ .test.ts)
+    supabaseAdmin.ts           Supabase 서비스 롤 클라이언트, 공용 에러 타입
+supabase/migrations/            DB 스키마 (RLS 포함)
+server.ts                       Express 서버 진입점 + 라우트 등록
 ```
 
 ---
@@ -85,18 +107,28 @@ server.ts                  Express + Gemini 프록시
 
 - ✅ 전체 화면, 온보딩 플로우, 차트, 모달, 반응형
 - ✅ 로그인 — Supabase Auth. 이메일 OTP + Google OAuth, HttpOnly 세션 쿠키, 회원탈퇴
-- ✅ 데이터베이스 — Supabase(Postgres). 채널·콘텐츠·일별 지표·댓글 영속 저장
-- ✅ YouTube 연동 — OAuth, 토큰 암호화, 동기화 잡 큐, 댓글 SSE, 영상·댓글 관리(쓰기)
+- ✅ 데이터베이스 — Supabase(Postgres). 채널·콘텐츠·일별 지표·댓글 영속 저장, RLS로
+  클라이언트 직접 접근 차단(서버만 service role로 접근)
+- ✅ YouTube 연동 — OAuth(state/PKCE), 토큰 암호화, 동기화 잡 큐, 댓글 SSE,
+  영상·댓글 관리(쓰기), 영상별 일별 지표 수집(바이럴리티/피크타임/포맷 통계용)
+- ✅ Instagram / Threads / X 연동 — `src/server/socialConnections.ts`에 세 플랫폼
+  모두 OAuth 어댑터 구현 완료
+- ✅ 결제 / 크레딧 — `src/server/usage.ts`에 월 할당량 + AI 크레딧 시스템 구현
+  (구독 결제 연동 자체는 별개 — 플랜 상태만 관리)
 - ✅ 대시보드 — 연동된 채널의 **실제 지표** (`GET /api/metrics/overview`)
-- ✅ Gemini 프록시 2개 (`/api/gemini/analyze`, `/api/gemini/advisor`)
-- ❌ Instagram / Threads / X 연동 — 코드 없음
-- ❌ 결제 / 크레딧 / 구독 — 코드 없음
-- ❌ AI 분석 실데이터 — 아직 클라이언트가 보낸 지표로 분석합니다
-- 🔴 **`/api/gemini/*` 인증 없음** — 배포된 상태에서 누구나 호출 가능. 최우선 수정 대상
+- ✅ AI 분석 — 클라이언트가 보낸 값이 아니라 **서버가 DB에서 재계산한 실데이터**를
+  프롬프트 컨텍스트로 사용 (`src/server/ai.ts`)
+- ✅ Gemini 프록시 3개 (`/api/gemini/analyze`, `/api/gemini/advisor`,
+  `/api/gemini/draft`) — 전부 `requirePlusUser`로 인증 + Plus 플랜 확인 후 호출
+- 🔧 일부 Plus 전용 딥 인사이트(저장/공유 지표, 특정 브레이크다운)는 아직 수집
+  파이프라인이 없음 — 자세한 현황은 [`docs/research.md`](docs/research.md)와
+  [`docs/plan.md`](docs/plan.md) 참고
 
 계획은 [`docs/기획서.md`](docs/기획서.md) 9장(구현 절차),
 **계획에서 달라진 부분은 [`docs/개발_변경사항.md`](docs/개발_변경사항.md)** 에 있습니다.
-둘이 어긋나면 `개발_변경사항.md`가 최신입니다.
+둘이 어긋나면 `개발_변경사항.md`가 최신입니다. YouTube 연동의 상세 감사 결과와
+개선 작업 진행 상황은 [`docs/research.md`](docs/research.md) /
+[`docs/plan.md`](docs/plan.md)에 있습니다.
 
 ---
 

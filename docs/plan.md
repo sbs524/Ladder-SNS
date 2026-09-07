@@ -118,20 +118,24 @@ research.md의 "결론 및 권장 우선순위"를 따르되, 각 항목을 착�
 **목표**: README.md와 docs/과금_및_지표_정의.md를 실제 코드 상태와 일치시킨다.
 1~3번 작업이 끝난 뒤(또는 최소한 1번이 끝난 뒤) 최종 상태를 반영해 갱신한다.
 
-- [ ] 4-1. `README.md` "지금 상태에 대해" 절 전면 재작성:
-  - AI 분석: API 키 없으면 즉시 에러(하드코딩 폴백 없음)로 정정.
-  - Instagram/Threads/X 연동: `src/server/socialConnections.ts` 기준 구현 완료로 정정.
-  - 결제/크레딧/구독: `src/server/usage.ts` 기준 구현 완료로 정정.
+- [x] 4-1. `README.md` "지금 상태에 대해" 절 전면 재작성 완료:
+  - AI 분석/기타 API 키: "키 없이도 전부 동작"을 "키 없으면 즉시 에러"로 정정하고
+    하드코딩 폴백이 의도적으로 제거됐음을 명시.
+  - Instagram/Threads/X 연동: 구현 완료로 정정.
+  - 결제/크레딧: `usage.ts` 기준 구현 완료로 정정(구독 결제 자체는 별개임을 명시).
   - AI 분석 실데이터 여부: 서버 측 재계산 그라운딩 구조로 정정.
-  - `/api/gemini/*` 인증: `requirePlusUser` 적용됨으로 정정.
-- [ ] 4-2. `README.md` "구조" 절에 `src/server/{oauth,youtube,socialConnections,
-  metrics,insights,ai,usage}.ts`, `src/lib/*Api.ts` 등 실제 핵심 파일 반영, 옛
-  `data/mockData.ts` 중심 서술 제거.
-- [ ] 4-3. `docs/과금_및_지표_정의.md`의 `youtube_video_daily_metrics` 관련 서술을
-  1번 작업 완료 후의 실제 구현 상태로 갱신(완료 전이라면 "🔧 미구현"으로 정정,
-  완료 후라면 채택한 방식(A안/B안)을 명시).
-- [ ] 4-4. `docs/과금_및_지표_정의.md` §5.5의 "나머지는 전부 이미 수집 중" 서술을
-  실제 미구현 항목(saveRate, avgSavesOrShares, 영상별 일별 지표) 기준으로 재검토.
+  - `/api/gemini/*` 인증: 3개 라우트 모두 `requirePlusUser` 적용됨으로 정정.
+  - 아직 미구현인 일부 딥 인사이트(saveRate, avgSavesOrShares)는 남겨두고
+    `docs/research.md`/`docs/plan.md` 링크 추가.
+- [x] 4-2. `README.md` "구조" 절을 `src/server/{oauth,youtube,socialConnections,
+  metrics,insights,ai,usage,supabaseAdmin}.ts`, `src/lib/*Api.ts`, 실제 컴포넌트
+  목록으로 전면 교체, 옛 `data/mockData.ts` 중심 서술 제거.
+- [x] 4-3. `docs/과금_및_지표_정의.md`의 `youtube_video_daily_metrics` 관련 서술을
+  1번 작업 완료 후 실제 구현 상태(A안 채택, 채널당 최근 15개 영상 제한)로 갱신.
+- [x] 4-4. `docs/과금_및_지표_정의.md` §5.5의 "나머지는 전부 이미 수집 중" 서술을
+  검토 — `saveRate`/`avgSavesOrShares`는 이미 문서 자체가 🔧 미구현으로 정확히
+  표시하고 있었고, 영상별 일별 지표는 1번 작업으로 실제 구현됐으므로 해당 서술은
+  이제 사실과 일치함. 수집 범위 제한(최근 15개 영상)만 각주로 추가.
 
 ---
 
