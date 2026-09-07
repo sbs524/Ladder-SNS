@@ -360,13 +360,13 @@ async function getGrantForChannel(db: ReturnType<typeof getAdminClient>, channel
   return requireOwnedGrant(db, channel.profile_id, channel.platform_oauth_grant_id);
 }
 
-function hasWriteScope(scopes: string[] | null | undefined) {
+export function hasWriteScope(scopes: string[] | null | undefined) {
   return Array.isArray(scopes) && scopes.includes(YOUTUBE_WRITE_SCOPE);
 }
 
 // Channels connected before the write scope was introduced only granted youtube.readonly — this
 // throws until the user reconnects the channel and re-consents to the write scope.
-function requireWriteScope(grant: OAuthGrant) {
+export function requireWriteScope(grant: OAuthGrant) {
   if (!hasWriteScope(grant.granted_scopes)) {
     throw new ApiError(403, "YOUTUBE_SCOPE_INSUFFICIENT", "Reconnect this YouTube channel to grant permission to manage videos and comments.");
   }
@@ -445,7 +445,7 @@ export async function deleteAllYoutubeDataForProfile(profileId: string) {
   if (grantsError) throw grantsError;
 }
 
-function asBigint(value: unknown) {
+export function asBigint(value: unknown) {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
@@ -922,7 +922,7 @@ async function syncRetentionCurves(
   return stored;
 }
 
-function commentPayload(comment: GoogleComment, channel: SocialChannel, contentIds: Map<string, string>, parentId: string | null = null) {
+export function commentPayload(comment: GoogleComment, channel: SocialChannel, contentIds: Map<string, string>, parentId: string | null = null) {
   const snippet = comment.snippet || {};
   return {
     social_channel_id: channel.social_channel_id,

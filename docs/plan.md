@@ -83,19 +83,33 @@ research.md의 "결론 및 권장 우선순위"를 따르되, 각 항목을 착�
 
 **목표**: 가장 크고 위험도 높은 파일(1460줄)에 최소한의 회귀 안전망을 만든다.
 
-- [ ] 3-1. 순수 함수부터 테스트: `parseDurationSeconds`, `contentTypeForVideo`,
-  `parseCursor`/`makeCursor`, `stableHash`, `readJobCursor`.
+- [x] 3-1. 순수 함수 테스트 완료(1번 항목과 겸함): `parseDurationSeconds`,
+  `contentTypeForVideo`, `parseCursor`/`makeCursor`, `stableHash`, `readJobCursor`,
+  `pickVideoMetricColumns`, `parseGoogleErrorReason`, `classifyGoogleError`,
+  `syncRetryDelayMs`, `hasWriteScope`, `requireWriteScope`, `asBigint`,
+  `commentPayload` — 모두 `src/server/youtube.test.ts`에 존재.
 - [ ] 3-2. 토큰 갱신 로직: `refreshGrantAccessToken`이 만료 60초 전 갱신을
   트리거하는지, 갱신 실패 시 grant를 `requires_reauth`로 전이하는지 검증.
-- [ ] 3-3. 권한 검사: `requireWriteScope`, `requireOwnedChannel`,
-  `requireOwnedVideo`, `requireOwnedComment`가 소유하지 않은 리소스/스코프
-  부족 시 올바르게 차단하는지.
-- [ ] 3-4. 댓글 매핑: `commentPayload`의 parent/reply 매핑, `resolveGoogleParentCommentId`.
-- [ ] 3-5. 계정 삭제 흐름: `deleteAllYoutubeDataForProfile`이 FK 제약을 고려한
-  올바른 순서로 삭제하는지(트랜잭션/순서 검증), Google 토큰 revoke가
-  best-effort로 실패해도 삭제가 진행되는지.
-- [ ] 3-6. 동기화 잡 큐: `claim_platform_sync_jobs` 경합 상황을 흉내낸 통합
-  테스트(가능하면 로컬 Supabase/Postgres 테스트 DB 사용).
+  **미착수** — `getAdminClient()`(Supabase)와 `fetch`(Google OAuth 토큰 엔드포인트)를
+  모두 모킹해야 하는데, 이 저장소에는 아직 Supabase 클라이언트를 모킹하는 테스트
+  인프라가 전혀 없다(기존 테스트는 전부 순수 함수만 검증). 이 함수를 테스트하려면
+  먼저 `db.from(...).select().eq().maybeSingle()`류 체이닝을 흉내내는 최소 페이크
+  빌더를 만들거나, DB 접근 로직을 주입 가능하게 리팩터링해야 한다 — 별도 선행
+  작업으로 분리 필요.
+- [ ] 3-3. 권한 검사 중 `requireWriteScope`는 순수 함수라 3-1에서 테스트 완료.
+  `requireOwnedChannel`, `requireOwnedVideo`, `requireOwnedComment`는 전부 DB 조회를
+  포함하므로 3-2와 같은 이유로 **미착수**.
+- [x] 3-4-a. `commentPayload`의 parent/reply 매핑은 순수 함수라 테스트 완료(3-1 참고).
+- [ ] 3-4-b. `resolveGoogleParentCommentId`는 DB 조회를 포함해 **미착수**(3-2와 동일한
+  이유).
+- [ ] 3-5. 계정 삭제 흐름(`deleteAllYoutubeDataForProfile`)은 DB 삭제 순서와 Google
+  revoke API 호출이 섞여 있어 **미착수**(3-2와 동일한 이유).
+- [ ] 3-6. 동기화 잡 큐 경합 테스트(`claim_platform_sync_jobs`)는 실제 Postgres가
+  필요해 **미착수**.
+
+**남은 작업(3-2, 3-3 나머지, 3-4-b, 3-5, 3-6)의 공통 선행 조건**: Supabase
+`getAdminClient()`를 모킹하거나 주입 가능하게 만드는 최소 테스트 하네스. 이것부터
+별도 작업으로 만들고 나면 나머지는 각각 빠르게 붙일 수 있다.
 
 ---
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyGoogleError, contentTypeForVideo, makeCursor, parseCursor, parseDurationSeconds, parseGoogleErrorReason, pickVideoMetricColumns, readJobCursor, stableHash, syncRetryDelayMs } from "./youtube";
+import { asBigint, classifyGoogleError, commentPayload, contentTypeForVideo, hasWriteScope, makeCursor, parseCursor, parseDurationSeconds, parseGoogleErrorReason, pickVideoMetricColumns, readJobCursor, requireWriteScope, stableHash, syncRetryDelayMs } from "./youtube";
+import { ApiError } from "./supabaseAdmin";
 
 test("parseDurationSeconds reads ISO 8601 durations and rejects garbage", () => {
   assert.equal(parseDurationSeconds("PT1H2M3S"), 3723);
@@ -110,4 +111,72 @@ test("syncRetryDelayMs waits hours for daily quota but backs off in minutes for 
   assert.equal(syncRetryDelayMs("GOOGLE_API_TRANSIENT", 3), 240_000);
   // 지수 백오프가 상한(30분)을 넘지 않는다.
   assert.equal(syncRetryDelayMs("GOOGLE_API_TRANSIENT", 20), 30 * 60_000);
+});
+
+const baseGrant = {
+  platform_oauth_grant_id: "11111111-1111-1111-1111-111111111111",
+  profile_id: "22222222-2222-2222-2222-222222222222",
+  platform: "youtube" as const,
+  provider: "google",
+  provider_subject: "subject",
+  access_token_ciphertext: null,
+  refresh_token_ciphertext: null,
+  access_token_expires_at: null,
+  status: "active" as const,
+};
+
+test("hasWriteScope only recognizes the force-ssl scope, not the plain readonly one", () => {
+  assert.equal(hasWriteScope(["https://www.googleapis.com/auth/youtube.force-ssl"]), true);
+  assert.equal(hasWriteScope(["https://www.googleapis.com/auth/youtube.readonly"]), false);
+  assert.equal(hasWriteScope(null), false);
+  assert.equal(hasWriteScope([]), false);
+});
+
+test("requireWriteScope blocks channels connected before the write scope existed", () => {
+  assert.throws(
+    () => requireWriteScope({ ...baseGrant, granted_scopes: ["https://www.googleapis.com/auth/youtube.readonly"] }),
+    (error: unknown) => error instanceof ApiError && error.code === "YOUTUBE_SCOPE_INSUFFICIENT" && error.status === 403,
+  );
+  assert.doesNotThrow(() => requireWriteScope({ ...baseGrant, granted_scopes: ["https://www.googleapis.com/auth/youtube.force-ssl"] }));
+});
+
+test("asBigint accepts non-negative safe integers (including numeric strings) and rejects the rest", () => {
+  assert.equal(asBigint("12345"), 12345);
+  assert.equal(asBigint(42), 42);
+  assert.equal(asBigint(-1), null);
+  assert.equal(asBigint("not a number"), null);
+  assert.equal(asBigint(null), null);
+  assert.equal(asBigint(Number.MAX_SAFE_INTEGER + 1), null);
+});
+
+const baseChannel = {
+  social_channel_id: "33333333-3333-3333-3333-333333333333",
+  profile_id: "22222222-2222-2222-2222-222222222222",
+  platform_oauth_grant_id: "11111111-1111-1111-1111-111111111111",
+  platform: "youtube" as const,
+  external_channel_id: "UC_channel",
+  handle: null,
+  display_name: "Test Channel",
+  avatar_url: null,
+  is_dashboard_enabled: true,
+  status: "active",
+};
+
+test("commentPayload marks a top-level comment vs. a reply, and resolves its social_content_id from the video id map", () => {
+  const contentIds = new Map([["video-1", "44444444-4444-4444-4444-444444444444"]]);
+  const topLevel = commentPayload({ id: "c1", snippet: { videoId: "video-1", textOriginal: "hi", publishedAt: "2026-09-01T00:00:00Z" } }, baseChannel, contentIds);
+  assert.equal(topLevel.comment_kind, "comment");
+  assert.equal(topLevel.parent_social_comment_id, null);
+  assert.equal(topLevel.external_thread_id, "c1");
+  assert.equal(topLevel.social_content_id, "44444444-4444-4444-4444-444444444444");
+
+  const reply = commentPayload({ id: "c2", snippet: { videoId: "video-1", textOriginal: "reply" } }, baseChannel, contentIds, "44444444-4444-4444-4444-444444444444");
+  assert.equal(reply.comment_kind, "reply");
+  assert.equal(reply.parent_social_comment_id, "44444444-4444-4444-4444-444444444444");
+  assert.equal(reply.external_thread_id, "44444444-4444-4444-4444-444444444444");
+});
+
+test("commentPayload leaves social_content_id null when the comment's video was never synced", () => {
+  const payload = commentPayload({ id: "c3", snippet: { videoId: "unknown-video" } }, baseChannel, new Map());
+  assert.equal(payload.social_content_id, null);
 });
