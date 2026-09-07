@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contentTypeForVideo, makeCursor, parseCursor, parseDurationSeconds, pickVideoMetricColumns, readJobCursor, stableHash } from "./youtube";
+import { classifyGoogleError, contentTypeForVideo, makeCursor, parseCursor, parseDurationSeconds, parseGoogleErrorReason, pickVideoMetricColumns, readJobCursor, stableHash, syncRetryDelayMs } from "./youtube";
 
 test("parseDurationSeconds reads ISO 8601 durations and rejects garbage", () => {
   assert.equal(parseDurationSeconds("PT1H2M3S"), 3723);
@@ -63,4 +63,51 @@ test("pickVideoMetricColumns keeps only Analytics fields that youtube_video_dail
 test("pickVideoMetricColumns skips fields the Analytics response omitted", () => {
   assert.deepEqual(pickVideoMetricColumns({ views: 10 }), { views: 10 });
   assert.deepEqual(pickVideoMetricColumns({}), {});
+});
+
+test("parseGoogleErrorReason extracts the first error reason, tolerating malformed bodies", () => {
+  assert.equal(parseGoogleErrorReason(JSON.stringify({ error: { errors: [{ reason: "quotaExceeded" }] } })), "quotaExceeded");
+  assert.equal(parseGoogleErrorReason("not json"), null);
+  assert.equal(parseGoogleErrorReason(JSON.stringify({ error: {} })), null);
+  assert.equal(parseGoogleErrorReason(""), null);
+});
+
+test("classifyGoogleError distinguishes daily quota exhaustion from transient rate limiting", () => {
+  const quota = classifyGoogleError(403, JSON.stringify({ error: { errors: [{ reason: "quotaExceeded" }] } }), "quota");
+  assert.equal(quota.code, "GOOGLE_QUOTA_EXCEEDED");
+  assert.equal(quota.status, 429);
+
+  const dailyLimit = classifyGoogleError(403, JSON.stringify({ error: { errors: [{ reason: "dailyLimitExceeded" }] } }), "quota");
+  assert.equal(dailyLimit.code, "GOOGLE_QUOTA_EXCEEDED");
+
+  const burstLimit = classifyGoogleError(403, JSON.stringify({ error: { errors: [{ reason: "userRateLimitExceeded" }] } }), "burst");
+  assert.equal(burstLimit.code, "GOOGLE_RATE_LIMITED");
+
+  const plain429 = classifyGoogleError(429, "", "rate limited");
+  assert.equal(plain429.code, "GOOGLE_RATE_LIMITED");
+
+  const notFound = classifyGoogleError(404, "", "gone");
+  assert.equal(notFound.code, "GOOGLE_NOT_FOUND");
+  assert.equal(notFound.status, 404);
+
+  const unauthorized = classifyGoogleError(401, "", "bad token");
+  assert.equal(unauthorized.code, "GOOGLE_API_FAILED");
+  assert.equal(unauthorized.status, 401);
+
+  const serverError = classifyGoogleError(503, "", "down");
+  assert.equal(serverError.code, "GOOGLE_API_TRANSIENT");
+  assert.equal(serverError.status, 502);
+
+  const other = classifyGoogleError(400, "", "bad request");
+  assert.equal(other.code, "GOOGLE_API_FAILED");
+});
+
+test("syncRetryDelayMs waits hours for daily quota but backs off in minutes for transient errors", () => {
+  assert.equal(syncRetryDelayMs("GOOGLE_QUOTA_EXCEEDED", 1), 6 * 60 * 60 * 1000);
+  assert.equal(syncRetryDelayMs("GOOGLE_QUOTA_EXCEEDED", 4), 6 * 60 * 60 * 1000);
+  assert.equal(syncRetryDelayMs("GOOGLE_RATE_LIMITED", 1), 60_000);
+  assert.equal(syncRetryDelayMs("GOOGLE_RATE_LIMITED", 2), 120_000);
+  assert.equal(syncRetryDelayMs("GOOGLE_API_TRANSIENT", 3), 240_000);
+  // 지수 백오프가 상한(30분)을 넘지 않는다.
+  assert.equal(syncRetryDelayMs("GOOGLE_API_TRANSIENT", 20), 30 * 60_000);
 });

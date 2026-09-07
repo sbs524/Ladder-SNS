@@ -53,22 +53,29 @@ research.md의 "결론 및 권장 우선순위"를 따르되, 각 항목을 착�
 **목표**: `googleJson`이 403/429/5xx를 구분하고, 일시적 오류에는 재시도하며,
 쿼터 초과는 사용자에게 명확히 안내한다.
 
-- [ ] 2-1. `src/server/youtube.ts:206-223` `googleJson`에서 실패 응답 바디를 JSON으로
-  파싱해 `error.errors[].reason`(`quotaExceeded`, `dailyLimitExceeded`,
-  `rateLimitExceeded` 등)을 추출.
-- [ ] 2-2. 신규 에러 코드 정의: `GOOGLE_QUOTA_EXCEEDED`(403 quotaExceeded류),
-  `GOOGLE_RATE_LIMITED`(429), `GOOGLE_NOT_FOUND`(404), `GOOGLE_API_TRANSIENT`(5xx),
-  기존 `GOOGLE_API_FAILED`는 그 외 케이스로 유지.
-- [ ] 2-3. 429와 특정 5xx(502/503/504)에 한해 지수 백오프 재시도(예: 최대 3회,
-  base 500ms)를 `googleJson` 내부 또는 호출 wrapper에 추가. 403 quotaExceeded는
-  재시도해도 즉시 실패하므로 재시도 대상에서 제외하고 바로 사용자 안내로 전환.
-- [ ] 2-4. `runSyncJob` 등 호출부에서 신규 에러 코드별 분기(예: quota exceeded면
-  job을 `failed`가 아니라 `retry_after`로 표시해 다음 쿼터 리셋 이후 재시도되게
-  하는 것도 검토).
-- [ ] 2-5. 클라이언트 노출 메시지 정리: 쿼터/레이트리밋일 때 "지금은 동기화할 수
-  없습니다. 잠시 후 다시 시도하세요" 같은 사용자 친화적 문구로 매핑
-  (`src/lib/youtubeManageApi.ts` 및 관련 UI 에러 배너).
-- [ ] 2-6. 위 로직에 대한 유닛 테스트(403/429/5xx/기타 각각의 분기, 재시도 횟수 검증).
+- [x] 2-1. `src/server/youtube.ts`의 `googleJson`에서 실패 응답 바디를 JSON으로 파싱해
+  `error.errors[].reason`을 추출하는 `parseGoogleErrorReason` 추가.
+- [x] 2-2. 신규 에러 코드 정의: `GOOGLE_QUOTA_EXCEEDED`(403 quotaExceeded/
+  dailyLimitExceeded), `GOOGLE_RATE_LIMITED`(429 또는 rateLimitExceeded/
+  userRateLimitExceeded/backendError), `GOOGLE_NOT_FOUND`(404), `GOOGLE_API_TRANSIENT`
+  (5xx), 기존 `GOOGLE_API_FAILED`는 401 및 그 외 케이스로 유지 — `classifyGoogleError`
+  함수로 구현.
+- [x] 2-3. `GOOGLE_RATE_LIMITED`/`GOOGLE_API_TRANSIENT`에 한해 `googleJson` 내부에서
+  최대 3회, 지수 백오프(500ms 시작)로 즉시 재시도. `GOOGLE_QUOTA_EXCEEDED`(일일
+  쿼터 소진)는 즉시 재시도해도 소용없으므로 재시도 대상에서 제외.
+- [x] 2-4. `runSyncJob`의 실패 처리(`failJob`)를 개선: 쿼터/레이트리밋/일시 장애로
+  실패한 동기화 잡은 `failed`로 확정하지 않고, 기존 `platform_sync_jobs.scheduled_at`
+  컬럼을 이용해 `queued` 상태로 되돌려 지연 재시도(쿼터 소진은 6시간 뒤, 레이트
+  리밋/일시 장애는 1분부터 지수 백오프, 최대 30분, 최대 5회 재시도) — 스키마 변경
+  없이 기존 `claim_platform_sync_jobs`의 `scheduled_at <= now()` 조건을 그대로 활용.
+- [ ] 2-5. 클라이언트 노출 메시지 정리: `classifyGoogleError`가 이미 사용자 친화적
+  한국어 메시지(`ApiError.message`)를 담아 던지므로 수동 관리 라우트(영상/댓글
+  수정 등)에서는 별도 매핑 없이 그대로 노출됨. 다만 `src/lib/youtubeManageApi.ts`
+  및 관련 UI 에러 배너가 이 메시지를 그대로 사용자에게 보여주는지는 아직 UI
+  단에서 확인하지 않음 — 실제 화면 확인 필요.
+- [x] 2-6. `classifyGoogleError`/`parseGoogleErrorReason`/`syncRetryDelayMs`를 순수
+  함수로 export해 `src/server/youtube.test.ts`에 403/429/404/401/5xx/기타 분기와
+  재시도 지연 시간 계산에 대한 유닛 테스트 추가.
 
 ---
 

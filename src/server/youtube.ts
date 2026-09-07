@@ -203,23 +203,81 @@ function decryptToken(value: string | null) {
 }
 
 
-async function googleJson<T>(url: URL | string, accessToken?: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      ...(init?.headers || {}),
-    },
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    const message = body.slice(0, 300) || `Google API returned ${response.status}.`;
-    throw new ApiError(response.status === 401 ? 401 : 502, "GOOGLE_API_FAILED", message);
+// Reasons Google's API errors use for quota/rate-limit conditions. "quotaExceeded" and
+// "dailyLimitExceeded" mean the fixed daily unit budget is spent — retrying soon never helps, only
+// waiting for the next reset does. The others are short-lived bursts that a brief retry can clear.
+const GOOGLE_DAILY_QUOTA_REASONS = new Set(["quotaExceeded", "dailyLimitExceeded"]);
+const GOOGLE_TRANSIENT_RATE_LIMIT_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded", "backendError"]);
+
+export function parseGoogleErrorReason(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { error?: { errors?: Array<{ reason?: unknown }> } };
+    const reason = parsed.error?.errors?.[0]?.reason;
+    return typeof reason === "string" ? reason : null;
+  } catch {
+    return null;
   }
-  // videos.delete, comments.delete, and comments.setModerationStatus all return 204 No Content.
-  if (response.status === 204) return undefined as T;
-  const text = await response.text();
-  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+export function classifyGoogleError(status: number, body: string, message: string): ApiError {
+  const reason = parseGoogleErrorReason(body);
+  if (reason && GOOGLE_DAILY_QUOTA_REASONS.has(reason)) {
+    return new ApiError(429, "GOOGLE_QUOTA_EXCEEDED", "YouTube API의 하루 쿼터를 모두 사용했습니다. 내일 다시 시도해 주세요.");
+  }
+  if (status === 429 || (reason && GOOGLE_TRANSIENT_RATE_LIMIT_REASONS.has(reason))) {
+    return new ApiError(429, "GOOGLE_RATE_LIMITED", "지금은 YouTube API 요청이 몰려 있습니다. 잠시 후 다시 시도해 주세요.");
+  }
+  if (status === 404) {
+    return new ApiError(404, "GOOGLE_NOT_FOUND", message || "The requested YouTube resource was not found.");
+  }
+  if (status === 401) {
+    return new ApiError(401, "GOOGLE_API_FAILED", message);
+  }
+  if (status >= 500) {
+    return new ApiError(502, "GOOGLE_API_TRANSIENT", "YouTube API가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요.");
+  }
+  return new ApiError(502, "GOOGLE_API_FAILED", message);
+}
+
+// Codes worth a short in-process retry before giving up — a single burst-limit hit or a transient
+// 5xx often clears within a second or two. Daily quota exhaustion (GOOGLE_QUOTA_EXCEEDED) is
+// deliberately excluded: no amount of retrying within this request will free up quota.
+const GOOGLE_RETRYABLE_CODES = new Set(["GOOGLE_RATE_LIMITED", "GOOGLE_API_TRANSIENT"]);
+const GOOGLE_JSON_MAX_ATTEMPTS = 3;
+const GOOGLE_JSON_RETRY_BASE_DELAY_MS = 500;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function googleJson<T>(url: URL | string, accessToken?: string, init?: RequestInit): Promise<T> {
+  let lastError: ApiError | null = null;
+  for (let attempt = 1; attempt <= GOOGLE_JSON_MAX_ATTEMPTS; attempt++) {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        ...(init?.headers || {}),
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      const message = body.slice(0, 300) || `Google API returned ${response.status}.`;
+      const apiError = classifyGoogleError(response.status, body, message);
+      if (GOOGLE_RETRYABLE_CODES.has(apiError.code) && attempt < GOOGLE_JSON_MAX_ATTEMPTS) {
+        lastError = apiError;
+        await sleep(GOOGLE_JSON_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+        continue;
+      }
+      throw apiError;
+    }
+    // videos.delete, comments.delete, and comments.setModerationStatus all return 204 No Content.
+    if (response.status === 204) return undefined as T;
+    const text = await response.text();
+    return (text ? JSON.parse(text) : undefined) as T;
+  }
+  // Unreachable in practice — the loop above always returns or throws — but keeps TypeScript satisfied.
+  throw lastError || new ApiError(502, "GOOGLE_API_FAILED", "Google API request failed.");
 }
 
 async function exchangeGoogleCode(code: string, verifier: string) {
@@ -955,9 +1013,34 @@ async function completeJob(db: ReturnType<typeof getAdminClient>, job: SyncJob, 
   if (error) throw error;
 }
 
+// Quota/rate-limit/transient failures are worth requeuing rather than giving up on permanently —
+// the daily quota resets, a rate limit clears, a 5xx recovers. Reuses the job queue's existing
+// `scheduled_at` column (claim_platform_sync_jobs only claims queued rows due at or before now), so
+// no schema change is needed. attempt_count is bumped by claim_platform_sync_jobs on every claim.
+const SYNC_RETRYABLE_ERROR_CODES = new Set(["GOOGLE_QUOTA_EXCEEDED", "GOOGLE_RATE_LIMITED", "GOOGLE_API_TRANSIENT"]);
+const SYNC_MAX_ATTEMPTS = 5;
+const SYNC_QUOTA_RETRY_DELAY_MS = 6 * 60 * 60 * 1000; // 하루 쿼터 소진 시 다음 날 아침(대략 6시간 뒤)에 재시도.
+const SYNC_TRANSIENT_RETRY_BASE_DELAY_MS = 60_000; // 레이트리밋/일시 장애는 1분부터 지수 백오프.
+
+export function syncRetryDelayMs(code: string, attemptCount: number) {
+  if (code === "GOOGLE_QUOTA_EXCEEDED") return SYNC_QUOTA_RETRY_DELAY_MS;
+  return Math.min(SYNC_TRANSIENT_RETRY_BASE_DELAY_MS * 2 ** Math.max(attemptCount - 1, 0), 30 * 60_000);
+}
+
 async function failJob(db: ReturnType<typeof getAdminClient>, job: SyncJob, error: unknown) {
   const message = error instanceof Error ? error.message.slice(0, 500) : "YouTube sync failed.";
-  await db.from("platform_sync_jobs").update({ status: "failed", finished_at: new Date().toISOString(), error_code: error instanceof ApiError ? error.code : "SYNC_FAILED", error_message: message }).eq("platform_sync_job_id", job.platform_sync_job_id);
+  const code = error instanceof ApiError ? error.code : "SYNC_FAILED";
+  if (SYNC_RETRYABLE_ERROR_CODES.has(code) && job.attempt_count < SYNC_MAX_ATTEMPTS) {
+    await db.from("platform_sync_jobs").update({
+      status: "queued",
+      scheduled_at: new Date(Date.now() + syncRetryDelayMs(code, job.attempt_count)).toISOString(),
+      started_at: null,
+      error_code: code,
+      error_message: message,
+    }).eq("platform_sync_job_id", job.platform_sync_job_id);
+    return;
+  }
+  await db.from("platform_sync_jobs").update({ status: "failed", finished_at: new Date().toISOString(), error_code: code, error_message: message }).eq("platform_sync_job_id", job.platform_sync_job_id);
 }
 
 export function readJobCursor(cursor: string | null) {
