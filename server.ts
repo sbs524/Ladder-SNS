@@ -27,6 +27,9 @@ async function startServer() {
       aiEnabled: Boolean(process.env.GEMINI_API_KEY),
       authEnabled: Boolean(process.env.VITE_SUPABASE_URL && process.env.VITE_SUPABASE_PUBLISHABLE_KEY),
       youtubeEnabled: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.GOOGLE_YOUTUBE_CLIENT_ID && process.env.GOOGLE_YOUTUBE_CLIENT_SECRET),
+      // 이게 꺼져 있으면 최초 연결(initial job) 이후 채널이 다시는 자동 동기화되지 않는다 —
+      // youtubeEnabled가 true라도 이 값이 false면 실질적으로 YouTube 데이터가 멈춰 있는 상태다.
+      youtubeSyncWorkerEnabled: process.env.YOUTUBE_SYNC_WORKER_ENABLED === "true",
     });
   });
 

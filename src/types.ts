@@ -89,19 +89,6 @@ export interface ActivityNotification {
   targetPost?: string;
 }
 
-export interface EngagementDeepMetric {
-  platform: PlatformType;
-  engagementRate: number; // e.g. 8.9%
-  saveRate: number; // e.g. 4.2%
-  shareRate: number; // e.g. 3.8%
-  commentRatio: number; // e.g. 1.4%
-  retentionRate: number; // e.g. 68%
-  clickThroughRate: number; // e.g. 3.2%
-  viralityScore: number; // 0~100
-  peakTime: string; // e.g. "오후 8시 ~ 11시"
-  bestFormat: string; // e.g. "60초 미만 쇼츠"
-  topAudienceAge: string; // e.g. "25~34세 (48%)"
-}
 
 export interface ContentFormatStat {
   id: string;

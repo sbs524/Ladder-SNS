@@ -41,7 +41,8 @@ export type OverviewPost = {
   views: number;
   likes: number;
   comments: number;
-  shares: number;
+  /** YouTube Data API에는 영상별 공유수가 없어 항상 null. */
+  shares: number | null;
   /** 발행 직후 3일 조회수. 그 기간을 아직 못 채운 영상은 null. */
   initialViews: number | null;
   /** 초기 조회수 ÷ 채널 초기 조회수 중앙값. 비교할 표본이 없으면 null. */

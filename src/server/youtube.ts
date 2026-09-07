@@ -1113,7 +1113,13 @@ export async function processYoutubeSyncQueue() {
 }
 
 export function startYoutubeSyncWorker() {
-  if (process.env.YOUTUBE_SYNC_WORKER_ENABLED !== "true" || workerTimer) return;
+  if (process.env.YOUTUBE_SYNC_WORKER_ENABLED !== "true") {
+    // 조용히 꺼진 채로 있으면 최초 연결 이후 채널이 다시는 동기화되지 않는데도 서버는 정상
+    // 기동된 것처럼 보인다 — 최소한 시작 로그에는 남긴다. (/api/health의 youtubeSyncWorkerEnabled도 참고.)
+    console.warn("YouTube sync worker is disabled (YOUTUBE_SYNC_WORKER_ENABLED is not \"true\"). Connected channels will not auto-sync.");
+    return;
+  }
+  if (workerTimer) return;
   workerTimer = setInterval(() => void processYoutubeSyncQueue(), 5_000);
   workerTimer.unref();
   void processYoutubeSyncQueue();

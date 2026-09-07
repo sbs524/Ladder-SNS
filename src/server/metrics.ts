@@ -359,7 +359,9 @@ export function registerMetricsRoutes(app: Express) {
           views: num(metrics.viewCount),
           likes: num(metrics.likeCount),
           comments: num(metrics.commentCount),
-          shares: 0,
+          // YouTube Data API의 videos.statistics에는 영상별 공유수가 없다 — 0으로 채우면 "공유
+          // 없음"처럼 보이므로, 값이 없다는 사실 자체를 null로 나타낸다.
+          shares: null,
         };
       });
 

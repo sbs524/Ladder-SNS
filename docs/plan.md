@@ -160,12 +160,15 @@ research.md의 "결론 및 권장 우선순위"를 따르되, 각 항목을 착�
 
 ## 6. [하] 잔여 정리 항목
 
-- [ ] 6-1. `src/server/metrics.ts:362`의 `shares: 0` 하드코딩 제거: 값이 없음을
-  UI에서 "–"로 표시하거나, 채널 일별 합계를 참고 표시하도록 변경.
-- [ ] 6-2. `src/types.ts:92-104` `EngagementDeepMetric` 미사용 타입 삭제(또는
-  `src/lib/insightsApi.ts` 실사용 타입과 통일).
-- [ ] 6-3. `/api/health`(`server.ts:29`)에 `youtubeSyncWorkerEnabled` 필드 추가,
-  워커가 꺼진 채로 기동될 때 서버 시작 로그에 경고 남기기.
+- [x] 6-1. `src/server/metrics.ts`의 `shares: 0` 하드코딩을 `shares: null`로 변경하고
+  `OverviewPost.shares` 타입도 `number | null`로 정정 — 확인 결과 이 필드는 현재
+  어떤 컴포넌트에서도 화면에 렌더링되지 않아(순수 API 응답 데이터) UI 표시 로직
+  추가는 불필요했고, 값의 정확성만 바로잡음.
+- [x] 6-2. `src/types.ts`의 미사용 `EngagementDeepMetric` 타입 삭제(어디서도 import
+  되지 않음을 확인).
+- [x] 6-3. `/api/health`(`server.ts`)에 `youtubeSyncWorkerEnabled` 필드 추가, 워커가
+  꺼진 채로 기동될 때(`startYoutubeSyncWorker`) 서버 시작 로그에 `console.warn`
+  경고 남기도록 변경.
 
 ---
 
