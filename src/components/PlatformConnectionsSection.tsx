@@ -222,6 +222,15 @@ export function PlatformConnectionsSection({ isAuthenticated, onOpenRawData }: {
         {!isAuthenticated ? <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/70 px-3 py-2.5 text-[11px] text-indigo-800 flex gap-2"><ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" /><span>연동 상태 확인과 계정 연결은 로그인 후 사용할 수 있습니다.</span></div> : <>
           {error && <div role="alert" className="mt-3 rounded-xl border border-rose-100 bg-rose-50/70 px-3 py-2.5 text-[11px] text-rose-700 flex gap-2"><AlertCircle className="w-4 h-4 shrink-0" />{error}</div>}
 
+          {opened.id === 'youtube' && !openedConnected && !loading && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2.5 text-[11px] leading-4 text-amber-900 flex gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              <strong className="font-extrabold">이 연동은 지표 조회 권한만이 아니라 영상 수정·삭제, 댓글 관리 권한(youtube.force-ssl)까지
+              함께 요청합니다.</strong> 지표만 확인할 목적이어도 계정 관리 권한이 함께 부여되니, 신뢰할 수 있는 채널에만 연결해 주세요.
+              (동영상을 새로 업로드하지는 않습니다.)
+            </span>
+          </div>}
+
           {opened.id === 'youtube' && <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-2">{youtubeDataTypes.map(({ icon: Icon, title, text, tab }) => {
             const body = <><Icon className="w-3.5 h-3.5 text-red-500 mb-1.5" /><p className="text-[11px] font-extrabold text-slate-800">{title}</p><p className="mt-0.5 text-[10px] leading-3.5 text-slate-500">{text}</p></>;
             const openable = openedConnected && !loading && onOpenRawData;
