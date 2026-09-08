@@ -31,3 +31,20 @@ test("실패한 채널도 같은 주기로 물러난다 — 5초마다 구글을
   const stale = new Map([["a", latest("failed", "2026-09-06T00:00:00.000Z")]]);
   assert.deepEqual(channelsNeedingRefresh(["a"], stale, STALE_BEFORE), ["a"]);
 });
+
+import { metricsWithoutUnknown } from "./youtube";
+
+const REJECTED = 'Unknown identifier (impressions) given in field parameters.metrics.';
+
+test("거부된 지표 이름만 빼고 나머지는 남긴다", () => {
+  assert.equal(metricsWithoutUnknown("views,likes,impressions", REJECTED), "views,likes");
+});
+
+test("지표가 아니라 차원이 거부되면 원래 에러를 그대로 던지게 null을 준다", () => {
+  assert.equal(metricsWithoutUnknown("views,likes", REJECTED), null);
+  assert.equal(metricsWithoutUnknown("views,likes", "quota exceeded"), null);
+});
+
+test("마지막 하나까지 빼서 빈 요청을 보내지는 않는다", () => {
+  assert.equal(metricsWithoutUnknown("impressions", REJECTED), null);
+});
