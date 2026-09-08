@@ -583,7 +583,7 @@ async function syncVideoPage(db: ReturnType<typeof getAdminClient>, channel: Soc
 
 type AnalyticsResponse = { columnHeaders?: Array<{ name?: string }>; rows?: Array<Array<number | string>> };
 
-async function analyticsRows(accessToken: string, startDate: string, endDate: string, dimensions: string, metrics: string, filters?: string) {
+async function analyticsRequest(accessToken: string, startDate: string, endDate: string, dimensions: string, metrics: string, filters?: string) {
   const url = new URL("https://youtubeanalytics.googleapis.com/v2/reports");
   const params: Record<string, string> = { ids: "channel==MINE", startDate, endDate, dimensions, metrics, maxResults: "200" };
   if (filters) params.filters = filters;
@@ -591,6 +591,35 @@ async function analyticsRows(accessToken: string, startDate: string, endDate: st
   const response = await googleJson<AnalyticsResponse>(url, accessToken);
   const headers = (response.columnHeaders || []).map((header) => header.name || "");
   return (response.rows || []).map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index]])) as JsonRecord);
+}
+
+/**
+ * 거부된 지표 이름을 목록에서 빼고 남은 것을 돌려준다. 빼지 못했으면(지표가 아니라 차원이
+ * 거부된 경우) null — 호출부가 원래 에러를 그대로 던지게 한다.
+ */
+export function metricsWithoutUnknown(metrics: string, message: string): string | null {
+  const unknown = /Unknown identifier \(([^)]+)\)/.exec(message)?.[1];
+  if (!unknown) return null;
+  const remaining = metrics.split(",").filter((metric) => metric !== unknown);
+  if (remaining.length === 0 || remaining.length === metrics.split(",").length) return null;
+  return remaining.join(",");
+}
+
+// 유튜브는 지원 지표를 예고 없이 바꾼다. 하나가 거부됐다고 리포트 전체를 버리면 그 채널의
+// 일별 지표가 통째로 사라지므로, 거부된 이름만 빼고 다시 부른다.
+async function analyticsRows(accessToken: string, startDate: string, endDate: string, dimensions: string, metrics: string, filters?: string): Promise<JsonRecord[]> {
+  let requested = metrics;
+  for (;;) {
+    try {
+      return await analyticsRequest(accessToken, startDate, endDate, dimensions, requested, filters);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const remaining = metricsWithoutUnknown(requested, message);
+      if (remaining === null) throw error;
+      console.warn(`YouTube Analytics rejected metric from "${requested}"; retrying as "${remaining}".`);
+      requested = remaining;
+    }
+  }
 }
 
 const metricColumnNames: Record<string, string> = {
@@ -627,7 +656,9 @@ async function syncAnalytics(db: ReturnType<typeof getAdminClient>, channel: Soc
   const start = new Date(end.getTime() - (SYNC_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000);
   const startDate = start.toISOString().slice(0, 10);
   const endDate = end.toISOString().slice(0, 10);
-  const baseMetrics = "views,engagedViews,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,dislikes,comments,shares,subscribersGained,subscribersLost,impressions,impressionsClickThroughRate";
+  // impressions / impressionsClickThroughRate는 여기 없다. 스튜디오에는 있지만 Analytics API는
+  // 모르는 이름이라, 넣으면 리포트 전체가 400으로 떨어지고 일별 지표가 한 줄도 안 남는다.
+  const baseMetrics = "views,engagedViews,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,dislikes,comments,shares,subscribersGained,subscribersLost";
   const daily = new Map<string, JsonRecord>();
   const mergeRows = (rows: JsonRecord[]) => {
     for (const row of rows) {
