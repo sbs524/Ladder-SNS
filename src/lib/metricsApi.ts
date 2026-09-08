@@ -3,6 +3,8 @@ import { PlatformType } from '../types';
 export type PlatformSummary = {
   platform: PlatformType;
   connected: boolean;
+  /** 채널은 붙어 있는데 토큰이 죽어 재연동이 필요한 상태. 숫자가 낡았다는 뜻이다. */
+  needsReauth: boolean;
   channelCount: number;
   handle: string | null;
   displayName: string | null;
@@ -53,6 +55,8 @@ export type MetricsOverview = {
   days: number;
   hasData: boolean;
   connectedCount: number;
+  /** 재연동이 필요한 플랫폼 목록. 비어 있으면 전부 정상. */
+  reauthPlatforms: PlatformType[];
   totals: {
     followers: number;
     views: number;

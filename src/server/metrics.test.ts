@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dayOffset, emptyTotals, engagementRate, median, num, percentChange, subscriberConversionRate, utcDayString } from "./metrics";
+import { dayOffset, emptyTotals, engagementRate, median, needsReauth, num, percentChange, subscriberConversionRate, utcDayString } from "./metrics";
 
 test("num coerces PostgREST bigint strings and rejects garbage", () => {
   assert.equal(num("33430"), 33430);
@@ -48,4 +48,22 @@ test("median averages the middle pair on even samples and survives an empty set"
 test("dayOffset closes the initial-performance window on the publish day itself", () => {
   assert.equal(dayOffset("2026-08-30", 2), "2026-09-01"); // 발행일 포함 3일
   assert.equal(dayOffset("2026-12-31", 1), "2027-01-01");
+});
+
+test("needsReauth는 채널이 아니라 grant 상태를 본다 — 채널은 끊긴 뒤에도 active로 남는다", () => {
+  const channel = (grants: unknown) => ({
+    social_channel_id: "c1",
+    platform: "youtube" as const,
+    handle: null,
+    display_name: "TARU",
+    avatar_url: null,
+    last_synced_at: null,
+    youtube_channel_profiles: null,
+    platform_oauth_grants: grants as never,
+  });
+  assert.equal(needsReauth(channel({ status: "requires_reauth" })), true);
+  assert.equal(needsReauth(channel([{ status: "requires_reauth" }])), true);
+  assert.equal(needsReauth(channel({ status: "active" })), false);
+  assert.equal(needsReauth(channel(null)), false);
+  assert.equal(needsReauth(channel([])), false);
 });
