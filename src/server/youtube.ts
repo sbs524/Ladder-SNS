@@ -934,11 +934,64 @@ async function runSyncJob(db: ReturnType<typeof getAdminClient>, job: SyncJob) {
   await completeJob(db, job, summary);
 }
 
+// 연동 시점 이후로 지표를 새로 당겨오는 유일한 경로. 큐를 비우는 워커는 잡을 만들지 않으므로,
+// 이게 없으면 대시보드는 연동 당시 스냅샷에서 영원히 멈춘다.
+const REFRESH_INTERVAL_HOURS = Number(process.env.YOUTUBE_SYNC_INTERVAL_HOURS) || 6;
+
+/**
+ * 마지막 잡 시도가 갱신 주기보다 오래된 채널에 full 잡을 하나씩 넣는다. 성공이 아니라 "시도"를
+ * 기준으로 재는 것이 중요하다 — 실패한 채널까지 같은 주기로 물러나므로, 토큰이 깨진 채널을 5초마다
+ * 구글에 다시 던지는 일이 생기지 않는다.
+ */
+export function channelsNeedingRefresh(
+  channelIds: string[],
+  latestJobByChannel: Map<string, { status: string; created_at: string }>,
+  staleBefore: string,
+) {
+  return channelIds.filter((channelId) => {
+    const latest = latestJobByChannel.get(channelId);
+    if (!latest) return true; // 한 번도 돌려본 적 없는 채널.
+    if (latest.status === "queued" || latest.status === "running") return false;
+    return latest.created_at < staleBefore;
+  });
+}
+
+async function enqueueStaleChannelRefreshes(db: ReturnType<typeof getAdminClient>) {
+  const staleBefore = new Date(Date.now() - REFRESH_INTERVAL_HOURS * 3_600_000).toISOString();
+  const { data: channelRows, error: channelError } = await db
+    .from("social_channels")
+    .select("social_channel_id")
+    .eq("platform", "youtube")
+    .eq("status", "active")
+    .eq("is_dashboard_enabled", true);
+  if (channelError) throw channelError;
+  const channelIds = (channelRows || []).map((row) => row.social_channel_id as string);
+  if (channelIds.length === 0) return;
+
+  const { data: jobRows, error: jobError } = await db
+    .from("platform_sync_jobs")
+    .select("social_channel_id, status, created_at")
+    .in("social_channel_id", channelIds)
+    .order("created_at", { ascending: false });
+  if (jobError) throw jobError;
+
+  const latestByChannel = new Map<string, { status: string; created_at: string }>();
+  for (const row of jobRows || []) {
+    const id = row.social_channel_id as string;
+    if (!latestByChannel.has(id)) latestByChannel.set(id, { status: row.status as string, created_at: row.created_at as string });
+  }
+
+  for (const channelId of channelsNeedingRefresh(channelIds, latestByChannel, staleBefore)) {
+    await queueSyncJob(db, channelId, "full");
+  }
+}
+
 export async function processYoutubeSyncQueue() {
   if (workerBusy) return;
   workerBusy = true;
   try {
     const db = getAdminClient();
+    await enqueueStaleChannelRefreshes(db);
     const workerName = process.env.YOUTUBE_SYNC_WORKER_NAME || `web-${process.pid}`;
     const { data, error } = await db.rpc("claim_platform_sync_jobs", { worker_name: workerName, batch_size: 1 });
     if (error) throw error;

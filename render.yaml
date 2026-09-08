@@ -21,3 +21,9 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      # 이게 "true"가 아니면 startYoutubeSyncWorker()가 그냥 반환한다 — 지표가 영원히 갱신되지 않는다.
+      - key: YOUTUBE_SYNC_WORKER_ENABLED
+        value: "true"
+      # 채널당 재동기화 주기(시간). 비우면 6시간.
+      - key: YOUTUBE_SYNC_INTERVAL_HOURS
+        value: "6"
