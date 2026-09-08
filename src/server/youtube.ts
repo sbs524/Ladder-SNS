@@ -15,6 +15,9 @@ import {
   setOAuthStateCookie,
   type OAuthStateCookie,
 } from "./oauth";
+// 초기 성과 구간의 정의는 표본을 읽는 쪽(metrics.ts)에 있다. 여기서 숫자를 다시 적으면 둘이
+// 어긋난 날 배지가 조용히 틀린 값을 보여주게 되므로 상수를 그대로 가져다 쓴다.
+import { INITIAL_PERFORMANCE_DAYS, dayOffset } from "./metrics";
 import { CHANNEL_LIMITS } from "./usage";
 import { ApiError, getAdminClient, requireString, toErrorResponse } from "./supabaseAdmin";
 
@@ -758,7 +761,8 @@ async function syncAnalytics(db: ReturnType<typeof getAdminClient>, channel: Soc
   }
 
   const retentionPoints = await syncRetentionCurves(db, channel, accessToken);
-  return { dailyMetrics: daily.size, breakdowns: breakdownCount, retentionPoints };
+  const initialVideoRows = await syncInitialVideoMetrics(db, channel, accessToken);
+  return { dailyMetrics: daily.size, breakdowns: breakdownCount, retentionPoints, initialVideoRows };
 }
 
 // Audience retention is per-video only (the API requires filters=video==ID) and is capped to the
@@ -818,6 +822,70 @@ async function syncRetentionCurves(db: ReturnType<typeof getAdminClient>, channe
     } catch (error) {
       // Retention data can be withheld below a view-count threshold; skip that one video, not the whole sync.
       console.warn(`Skipping retention curve for YouTube video ${target.externalId}:`, error instanceof Error ? error.message : error);
+    }
+  }
+  return stored;
+}
+
+// 대시보드의 "평소 대비" 배지는 영상별 발행 직후 N일 조회수(loadInitialSamples)를 쓰는데, 그
+// 표본이 사는 youtube_video_daily_metrics를 채우는 코드가 없어서 배지가 늘 비어 있었다.
+// 초기 구간이 이미 닫힌 영상만 한 번씩 받아 채운다 — 닫힌 구간의 값은 더 이상 변하지 않으므로
+// 영상 하나당 API 호출은 평생 한 번이다.
+const INITIAL_SAMPLE_VIDEO_LIMIT = 50;
+const VIDEO_DAILY_METRICS = "views,engagedViews,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,dislikes,comments,shares";
+
+async function syncInitialVideoMetrics(db: ReturnType<typeof getAdminClient>, channel: SocialChannel, accessToken: string) {
+  const { data: contents, error } = await db
+    .from("social_contents")
+    .select("external_content_id, source_published_at, youtube_videos(youtube_video_id)")
+    .eq("social_channel_id", channel.social_channel_id)
+    .eq("platform", "youtube")
+    .not("source_published_at", "is", null)
+    .order("source_published_at", { ascending: false, nullsFirst: false })
+    .limit(INITIAL_SAMPLE_VIDEO_LIMIT);
+  if (error) throw error;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const targets = (contents || []).flatMap((row) => {
+    const relation = row.youtube_videos as { youtube_video_id: string } | { youtube_video_id: string }[] | null;
+    const youtubeVideoId = Array.isArray(relation) ? relation[0]?.youtube_video_id : relation?.youtube_video_id;
+    const publishedAt = row.source_published_at as string | null;
+    if (!youtubeVideoId || !publishedAt) return [];
+    const startDate = publishedAt.slice(0, 10);
+    const endDate = dayOffset(startDate, INITIAL_PERFORMANCE_DAYS - 1);
+    if (endDate > today) return []; // 아직 초기 구간이 안 끝났다 — 지금 받으면 반쪽짜리 표본이 된다.
+    return [{ externalId: row.external_content_id as string, youtubeVideoId, startDate, endDate }];
+  });
+  if (targets.length === 0) return 0;
+
+  const { data: existing, error: existingError } = await db
+    .from("youtube_video_daily_metrics")
+    .select("youtube_video_id")
+    .in("youtube_video_id", targets.map((target) => target.youtubeVideoId));
+  if (existingError) throw existingError;
+  const alreadyStored = new Set((existing || []).map((row) => row.youtube_video_id as string));
+
+  let stored = 0;
+  for (const target of targets) {
+    if (alreadyStored.has(target.youtubeVideoId)) continue;
+    try {
+      const rows = await analyticsRows(accessToken, target.startDate, target.endDate, "day", VIDEO_DAILY_METRICS, `video==${target.externalId}`);
+      const payloads = rows.flatMap((row) => {
+        const day = typeof row.day === "string" ? row.day : null;
+        if (!day) return [];
+        const payload: JsonRecord = { youtube_video_id: target.youtubeVideoId, metric_date: day };
+        for (const [apiName, databaseName] of Object.entries(metricColumnNames)) {
+          if (row[apiName] !== undefined) payload[databaseName] = row[apiName];
+        }
+        return [payload];
+      });
+      if (payloads.length === 0) continue;
+      const { error: upsertError } = await db.from("youtube_video_daily_metrics").upsert(payloads, { onConflict: "youtube_video_id,metric_date" });
+      if (upsertError) throw upsertError;
+      stored += payloads.length;
+    } catch (error) {
+      // 비공개로 바뀌었거나 지표가 없는 영상 하나 때문에 나머지 표본을 버리지 않는다.
+      console.warn(`Skipping initial metrics for YouTube video ${target.externalId}:`, error instanceof Error ? error.message : error);
     }
   }
   return stored;

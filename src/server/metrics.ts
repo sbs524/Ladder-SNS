@@ -20,7 +20,10 @@ export type ChannelRow = {
   avatar_url: string | null;
   last_synced_at: string | null;
   youtube_channel_profiles: ProfileRelation | ProfileRelation[] | null;
+  platform_oauth_grants: GrantRelation | GrantRelation[] | null;
 };
+
+export type GrantRelation = { status: string | null };
 
 export type ProfileRelation = { subscriber_count: number | string | null; view_count: number | string | null; video_count: number | string | null };
 
@@ -169,6 +172,14 @@ function profileOf(channel: ChannelRow): ProfileRelation | null {
   return Array.isArray(relation) ? relation[0] || null : relation;
 }
 
+// 채널 행은 연동이 끊긴 뒤에도 계속 'active'다 — 끊긴 것은 채널이 아니라 토큰이기 때문이다.
+// 이 구분이 없으면 대시보드가 아무 표시 없이 연동 당시의 낡은 숫자를 계속 보여준다.
+export function needsReauth(channel: ChannelRow): boolean {
+  const relation = channel.platform_oauth_grants;
+  const grant = Array.isArray(relation) ? relation[0] || null : relation;
+  return grant?.status === "requires_reauth";
+}
+
 export function emptyTotals() {
   return { views: 0, likes: 0, comments: 0, shares: 0, subscribersGained: 0, subscribersLost: 0 };
 }
@@ -241,7 +252,7 @@ export function registerMetricsRoutes(app: Express) {
 
       const { data: channelData, error: channelError } = await db
         .from("social_channels")
-        .select("social_channel_id, platform, handle, display_name, avatar_url, last_synced_at, youtube_channel_profiles(subscriber_count, view_count, video_count)")
+        .select("social_channel_id, platform, handle, display_name, avatar_url, last_synced_at, youtube_channel_profiles(subscriber_count, view_count, video_count), platform_oauth_grants(status)")
         .eq("profile_id", authenticatedUser.user.id)
         .eq("is_dashboard_enabled", true)
         .eq("status", "active")
@@ -301,6 +312,8 @@ export function registerMetricsRoutes(app: Express) {
         return {
           platform,
           connected: platformChannels.length > 0,
+          // 연동은 살아 있는데 토큰만 죽은 상태. UI가 "재연동 필요"를 띄우는 근거다.
+          needsReauth: platformChannels.some(needsReauth),
           channelCount: platformChannels.length,
           handle: primary?.handle || null,
           displayName: primary?.display_name || null,
@@ -368,6 +381,7 @@ export function registerMetricsRoutes(app: Express) {
         days,
         hasData: dailyRows.length > 0,
         connectedCount: connectedPlatforms.length,
+        reauthPlatforms: platforms.filter((platform) => platform.needsReauth).map((platform) => platform.platform),
         totals: {
           followers: platforms.reduce((sum, platform) => sum + platform.followers, 0),
           views: overallCurrent.views,

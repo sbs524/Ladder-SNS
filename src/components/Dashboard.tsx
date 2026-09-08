@@ -135,6 +135,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
     conversionRate: overview?.totals.subscriberConversionRate ?? null,
   }), [overview]);
 
+  // 토큰이 죽으면 채널 행은 그대로 'active'라 카드가 조용히 낡은 숫자를 계속 띄운다. 그걸
+  // 눈에 보이게 만드는 값.
+  const reauthPlatforms = useMemo(
+    () => (overview?.reauthPlatforms ?? []).filter((platform) => activePlatforms.includes(platform)),
+    [activePlatforms, overview],
+  );
+
   const chartData = useMemo(() => overview?.chart ?? [], [overview]);
 
   // Labels follow the selected toggle even before the response lands, so "30D" never sits next
@@ -209,6 +216,32 @@ export const Dashboard: React.FC<DashboardProps> = ({
           })}
         </div>
       </div>
+
+      {/* 1-b. 연동 만료 경고. 숫자가 낡았다는 사실을 사용자가 알 수 있는 유일한 자리다. */}
+      {reauthPlatforms.length > 0 && (
+        <div className="rounded-2xl px-4 py-2.5 bg-amber-50/90 border border-amber-300/70 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="w-6 h-6 shrink-0 rounded-lg bg-amber-500/15 text-amber-700 flex items-center justify-center">
+              <Link2 className="w-3.5 h-3.5" />
+            </span>
+            <p className="text-[11px] font-semibold text-amber-900 min-w-0">
+              {reauthPlatforms.map((platform) => PLATFORM_CONFIGS[platform].koreanName).join(', ')} 연동이 만료됐습니다.
+              <span className="font-medium text-amber-800"> 재연동 전까지 이 채널의 지표는 갱신되지 않고 마지막으로 받아온 값이 그대로 표시됩니다.</span>
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {reauthPlatforms.map((platform) => (
+              <button
+                key={platform}
+                onClick={() => window.location.assign('/api/connections/' + platform + '/start')}
+                className="text-[11px] font-extrabold text-white bg-amber-600 hover:bg-amber-700 px-2.5 py-1 rounded-lg transition-colors"
+              >
+                {PLATFORM_CONFIGS[platform].koreanName} 재연동
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 2. Compact High-Level Metrics (4-Column in single row) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
@@ -374,6 +407,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <span className="text-[10px] text-slate-400 block -mt-0.5">
                       {isConnected ? stats?.handle || stats?.displayName : '연동 안 됨'}
                     </span>
+                    {stats?.needsReauth && (
+                      <span className="text-[9px] font-extrabold text-amber-700 bg-amber-100 px-1 rounded">재연동 필요</span>
+                    )}
                   </div>
                 </div>
 
